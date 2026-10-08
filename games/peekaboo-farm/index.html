@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Peekaboo Farm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #5b8def; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    /* The animals stay out behind the end screen; fade them enough to read the text. */
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="farm"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Peekaboo Farm</h1>
+    <p>Press any key to play! 🐮</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const ANIMALS = [
+      { emoji: "🐮", name: "Cow", sound: "Moo!" },
+      { emoji: "🐷", name: "Pig", sound: "Oink oink!" },
+      { emoji: "🐑", name: "Sheep", sound: "Baa!" },
+      { emoji: "🐔", name: "Chicken", sound: "Cluck cluck!" },
+      { emoji: "🐴", name: "Horse", sound: "Neigh!" },
+      { emoji: "🦆", name: "Duck", sound: "Quack quack!" },
+      { emoji: "🐶", name: "Dog", sound: "Woof woof!" },
+      { emoji: "🐱", name: "Cat", sound: "Meow!" },
+      { emoji: "🐸", name: "Frog", sound: "Ribbit!" },
+      { emoji: "🐐", name: "Goat", sound: "Maa!" },
+      { emoji: "🦉", name: "Owl", sound: "Hoo hoo!" },
+      { emoji: "🐰", name: "Bunny", sound: "Hop hop!" },
+    ];
+    // Hiding spots, drawn in units of the spot size with the origin at the bottom centre.
+    // TOPS is how high each one reaches, so animals know where to peek over.
+    const KINDS = ["barn", "bush", "haystack", "tree"];
+    const TOPS = { barn: -0.95, bush: -0.77, haystack: -0.75, tree: -0.94 };
+    const RISE_TIME = 0.5;   // seconds to pop out
+    const OUT_TIME = 2.6;    // seconds to stay out and say hello
+    const SINK_TIME = 0.4;   // seconds to duck back down
+    const NEXT_DELAY = 0.8;  // pause before the next spot starts wiggling
+    const WIGGLE_CYCLE = 1.2; // a spot shakes for half a second every this many seconds
+
+    const canvas = document.getElementById("farm");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, horizon = 0, flowers = [], clouds = [];
+    let spots = KINDS.map((kind) => ({ kind, x: 0, y: 0, s: 0, state: "idle", t: 0, animal: null, poke: 0, cycle: -1 }));
+    let particles = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0, nextWiggleIn = 0;
+    let lastSpot = -1, lastAnimal = null;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("peekabooFarmSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+
+      // Wide screens get one row of hiding spots, tall screens a 2x2 grid.
+      const landscape = W >= H * 1.1;
+      horizon = H * (landscape ? 0.5 : 0.38);
+      spots.forEach((sp, i) => {
+        if (landscape) {
+          sp.s = Math.min(W * 0.18, H * 0.3);
+          sp.x = W * (0.14 + i * 0.24);
+          sp.y = H * 0.84;
+        } else {
+          sp.s = Math.min(W * 0.34, H * 0.19);
+          sp.x = W * (i % 2 ? 0.72 : 0.28);
+          sp.y = H * (i < 2 ? 0.56 : 0.86);
+        }
+      });
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(horizon + H * 0.08, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.12, horizon - H * 0.12), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // Leafy shh-shh-shh while a hiding spot wiggles.
+    function rustle() {
+      const a = audio(); if (!a) return;
+      for (let i = 0; i < 3; i++) {
+        const t = a.currentTime + i * 0.13;
+        const src = a.createBufferSource();
+        const filter = a.createBiquadFilter();
+        const gain = a.createGain();
+        src.buffer = noise;
+        filter.type = "bandpass";
+        filter.frequency.value = rand(2500, 4000);
+        filter.Q.value = 1.5;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        src.connect(filter).connect(gain).connect(master);
+        src.start(t, rand(0, 1.5));
+        src.stop(t + 0.14);
+      }
+    }
+
+    function revealSound() {
+      tone(300, 0, 0.25, 0.2, "sine", 900);   // slide whistle up
+      tone(783.99, 0.2, 0.2, 0.15, "triangle");
+      tone(1046.5, 0.32, 0.4, 0.15, "triangle");
+    }
+
+    function sinkSound() {
+      tone(700, 0, 0.3, 0.1, "sine", 250);
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("peekabooFarmSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    // Where an animal sits for a spot: hidden behind it, peeking over, or all the way out.
+    function animalPos(sp) {
+      const e = sp.s * 0.7;
+      const top = sp.y + TOPS[sp.kind] * sp.s;
+      return { e, hidden: top + e * 0.75, peek: top + e * 0.3, out: top - e * 0.45 };
+    }
+
+    function animalY(sp) {
+      const p = animalPos(sp);
+      if (sp.state === "wiggle") return p.peek + Math.sin(sp.t * 5) * p.e * 0.06;
+      if (sp.state === "rise") {
+        const from = sp.fromHidden ? p.hidden : p.peek;
+        return from + (p.out - from) * easeOutBack(clamp(sp.t / RISE_TIME, 0, 1));
+      }
+      if (sp.state === "out") return p.out - Math.abs(Math.sin(sp.t * 6)) * p.e * 0.08; // happy hops
+      if (sp.state === "sink") return p.out + (p.hidden - p.out) * clamp(sp.t / SINK_TIME, 0, 1) ** 2;
+      return p.hidden;
+    }
+
+    function wiggleNext() {
+      const choices = spots.filter((sp, i) => i !== lastSpot);
+      const sp = pick(choices);
+      lastSpot = spots.indexOf(sp);
+      let animal;
+      do { animal = pick(ANIMALS); } while (animal === lastAnimal);
+      lastAnimal = animal;
+      Object.assign(sp, { state: "wiggle", t: 0, animal, cycle: -1, fromHidden: false });
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function reveal(sp) {
+      sp.state = "rise";
+      sp.t = 0;
+      if (phase === "playing") score++;
+      revealSound();
+      say(`${sp.animal.name}! ${sp.animal.sound}`);
+      sparkle(sp.x, animalPos(sp).out, sp.s);
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      for (const sp of spots) {
+        sp.t += dt;
+        sp.poke = Math.max(0, sp.poke - dt);
+        if (sp.state === "wiggle") {
+          const cycle = Math.floor(sp.t / WIGGLE_CYCLE);
+          if (cycle !== sp.cycle) { sp.cycle = cycle; rustle(); }
+        } else if (sp.state === "rise" && sp.t >= RISE_TIME) {
+          sp.state = "out";
+          sp.t = 0;
+        } else if (sp.state === "out" && sp.t >= OUT_TIME && phase === "playing") {
+          sp.state = "sink";
+          sp.t = 0;
+          sinkSound();
+        } else if (sp.state === "sink" && sp.t >= SINK_TIME) {
+          sp.state = "idle";
+          sp.animal = null;
+          if (phase === "playing") nextWiggleIn = NEXT_DELAY;
+        }
+      }
+
+      if (phase === "playing" && nextWiggleIn > 0) {
+        nextWiggleIn -= dt;
+        if (nextWiggleIn <= 0) wiggleNext();
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.5) finishRound(`You found ${score} animal${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      for (const [x, y, r] of list) {
+        c.beginPath();
+        c.arc(x, y, r, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+
+    const DRAW = {
+      barn(c) {
+        c.fillStyle = "#d64545";
+        c.fillRect(-0.45, -0.6, 0.9, 0.6);
+        c.fillStyle = "#9c2f2f";
+        c.beginPath();
+        c.moveTo(-0.55, -0.56);
+        c.lineTo(0, -0.95);
+        c.lineTo(0.55, -0.56);
+        c.closePath();
+        c.fill();
+        c.fillStyle = "#fff4e0";
+        c.fillRect(-0.2, -0.4, 0.4, 0.4);
+        c.strokeStyle = "#d64545";
+        c.lineWidth = 0.035;
+        c.beginPath();
+        c.moveTo(-0.2, -0.4); c.lineTo(0.2, 0);
+        c.moveTo(0.2, -0.4); c.lineTo(-0.2, 0);
+        c.moveTo(0, -0.4); c.lineTo(0, 0);
+        c.stroke();
+        circles(c, "#fff4e0", [[0, -0.72, 0.07]]);
+      },
+      bush(c) {
+        circles(c, "#3f9e4a", [[-0.3, -0.24, 0.24], [0.3, -0.24, 0.24], [0, -0.45, 0.32], [-0.14, -0.2, 0.22], [0.14, -0.2, 0.22]]);
+        circles(c, "#5cbf5a", [[-0.12, -0.55, 0.1], [0.2, -0.38, 0.08], [-0.32, -0.3, 0.07]]);
+        circles(c, "#e8434f", [[0.05, -0.3, 0.035], [-0.22, -0.42, 0.035], [0.3, -0.18, 0.035], [0.14, -0.6, 0.03]]);
+      },
+      haystack(c) {
+        c.fillStyle = "#f2c14e";
+        c.beginPath();
+        c.moveTo(-0.48, 0);
+        c.bezierCurveTo(-0.48, -1.0, 0.48, -1.0, 0.48, 0);
+        c.closePath();
+        c.fill();
+        c.strokeStyle = "#d39b25";
+        c.lineWidth = 0.03;
+        c.lineCap = "round";
+        c.beginPath();
+        for (const [x1, y1, x2, y2] of [[-0.3, -0.12, -0.22, -0.38], [-0.05, -0.1, 0.02, -0.48], [0.22, -0.18, 0.3, -0.36], [-0.18, -0.5, -0.08, -0.62], [0.12, -0.52, 0.2, -0.6]]) {
+          c.moveTo(x1, y1);
+          c.lineTo(x2, y2);
+        }
+        c.stroke();
+      },
+      tree(c) {
+        c.fillStyle = "#8b5a2b";
+        c.fillRect(-0.08, -0.42, 0.16, 0.42);
+        circles(c, "#4caf50", [[0, -0.62, 0.32], [-0.24, -0.5, 0.22], [0.24, -0.5, 0.22]]);
+        circles(c, "#e8434f", [[-0.12, -0.6, 0.045], [0.15, -0.72, 0.045], [0.25, -0.45, 0.045], [-0.25, -0.42, 0.045]]);
+      },
+    };
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      circles(ctx, "#ffd84d", [[W - 100, Math.min(130, horizon * 0.45), 42]]);
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.2, horizon + H * 0.1, W * 0.6, H * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, horizon + H * 0.12, W * 0.55, H * 0.15, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, horizon + H * 0.1, W, H);
+
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+    }
+
+    function drawSpot(sp) {
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.ellipse(sp.x, sp.y, sp.s * 0.5, sp.s * 0.07, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // The animal is drawn first so the hiding spot covers it.
+      if (sp.animal && sp.state !== "idle" && !(sp.state === "rise" && sp.t < 0)) {
+        ctx.font = `${animalPos(sp).e}px ${EMOJI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+        ctx.fillText(sp.animal.emoji, sp.x, animalY(sp));
+      }
+
+      let angle = 0;
+      if (sp.state === "wiggle" && sp.t % WIGGLE_CYCLE < 0.5) angle = Math.sin(sp.t * 45) * 0.06;
+      if (sp.poke > 0) angle += Math.sin(sp.poke * 60) * 0.05 * (sp.poke / 0.3);
+      ctx.save();
+      ctx.translate(sp.x, sp.y);
+      ctx.rotate(angle);
+      ctx.scale(sp.s, sp.s);
+      DRAW[sp.kind](ctx);
+      ctx.restore();
+    }
+
+    function drawName(sp) {
+      if (!sp.animal || !(sp.state === "out" || (sp.state === "rise" && sp.t > RISE_TIME * 0.6))) return;
+      const { e } = animalPos(sp);
+      const size = e * 0.32;
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.25;
+      ctx.strokeStyle = "#fff";
+      const y = animalY(sp) - e * 0.6;
+      ctx.strokeText(sp.animal.name, sp.x, y);
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(sp.animal.name, sp.x, y);
+    }
+
+    function draw() {
+      drawScene();
+      for (const sp of spots) drawSpot(sp);
+      for (const sp of spots) drawName(sp);
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      for (const sp of spots) Object.assign(sp, { state: "idle", t: 0, animal: null });
+      lastSpot = -1;
+      nextWiggleIn = 0.6;
+      timer.start();
+    }
+
+    function spotAt(x, y) {
+      return spots.find((sp) =>
+        Math.abs(x - sp.x) < sp.s * 0.55 &&
+        y < sp.y + sp.s * 0.1 &&
+        y > sp.y + (TOPS[sp.kind] - 0.3) * sp.s);
+    }
+
+    // Any key finds whoever is hiding in the wiggling spot.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const sp = spots.find((s) => s.state === "wiggle");
+      if (sp) reveal(sp);
+    });
+
+    // Tap the wiggling spot to find the animal; other spots just give a little shake.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const sp = spotAt(e.clientX, e.clientY);
+      if (!sp) return;
+      if (sp.state === "wiggle") reveal(sp);
+      else if (sp.state === "idle") { sp.poke = 0.3; boop(); }
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: everybody pops out to say goodbye.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      const used = new Set(spots.filter((sp) => sp.animal && sp.state !== "sink").map((sp) => sp.animal));
+      spots.forEach((sp, i) => {
+        if (sp.state === "out" || sp.state === "rise") return;
+        if (!sp.animal || sp.state === "sink") {
+          let animal;
+          do { animal = pick(ANIMALS); } while (used.has(animal));
+          used.add(animal);
+          sp.animal = animal;
+        }
+        sp.fromHidden = sp.state !== "wiggle";
+        sp.state = "rise";
+        sp.t = -i * 0.25;
+      });
+      revealSound();
+      say("Bye bye, everybody!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

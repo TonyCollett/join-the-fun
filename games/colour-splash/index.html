@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Colour Splash</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #fffaf0;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      text-shadow: 0 0 12px #fff, 0 0 4px #fff;
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #b15ef0; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    /* Keep the finished painting visible behind the end screen. */
+    #done { background: rgba(255, 255, 255, 0.15); }
+    #done .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      padding: 24px 40px;
+      border-radius: 32px;
+      background: rgba(255, 255, 255, 0.88);
+      box-shadow: 0 10px 30px rgba(58, 46, 92, 0.2);
+    }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="paper"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Colour Splash</h1>
+    <p>Press any key to play! 🎨</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <div class="card">
+      <h1>All done! 🎉</h1>
+      <p class="score" id="score"></p>
+      <p class="again" id="again">Press any key to play again!</p>
+    </div>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const COLOURS = [
+      { name: "Red", hex: "#ff3b4e" },
+      { name: "Orange", hex: "#ff8c1a" },
+      { name: "Yellow", hex: "#ffd21a" },
+      { name: "Green", hex: "#3cc46a" },
+      { name: "Blue", hex: "#2f80ff" },
+      { name: "Purple", hex: "#9b4dff" },
+      { name: "Pink", hex: "#ff6fb5" },
+    ];
+    // C major pentatonic, one note per colour.
+    const SCALE = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66];
+    const SPLATS_PER_COLOUR = 6;     // throws before the pot changes colour
+    const HELD_KEY_INTERVAL = 0.12;  // holding a key down throws at most this often
+    const FLIGHT_TIME = 0.3;         // seconds for paint to fly from the pot
+    const SAY_GAP = 2.5;             // don't repeat the colour name more often than this
+
+    const canvas = document.getElementById("paper");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    // Splats are stamped onto this offscreen layer so the painting builds up.
+    const paint = document.createElement("canvas");
+    const pctx = paint.getContext("2d");
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    let W = 0, H = 0;
+    let blobs = [], drops = [];
+    let colour = COLOURS[0], splatsLeft = SPLATS_PER_COLOUR, changeIn = 0, wobble = 0;
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, lastThrow = -1, lastSaid = -99;
+    let finaleShots = 0, finaleIn = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("colourSplashSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // Keep the painting when the window changes size.
+      let snapshot = null;
+      if (paint.width) {
+        snapshot = document.createElement("canvas");
+        snapshot.width = paint.width;
+        snapshot.height = paint.height;
+        snapshot.getContext("2d").drawImage(paint, 0, 0);
+      }
+      W = innerWidth;
+      H = innerHeight;
+      for (const [c, cx] of [[canvas, ctx], [paint, pctx]]) {
+        c.width = W * dpr;
+        c.height = H * dpr;
+        cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      if (snapshot) pctx.drawImage(snapshot, 0, 0, W, H);
+    }
+
+    function potSize() {
+      return clamp(Math.min(W, H) * 0.16, 70, 150);
+    }
+
+    // Where paint leaves the pot.
+    function potMouth() {
+      const h = potSize();
+      return { x: W / 2, y: H - 12 - h * 0.75 };
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function splatSound(c) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const src = a.createBufferSource();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      src.buffer = noise;
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(1500, t);
+      filter.frequency.exponentialRampToValueAtTime(200, t + 0.15);
+      gain.gain.setValueAtTime(0.5, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      src.connect(filter).connect(gain).connect(master);
+      src.start(t, rand(0, 1.5));
+      src.stop(t + 0.2);
+      tone(150, 0, 0.15, 0.3, "sine", 60);                           // thump
+      tone(SCALE[COLOURS.indexOf(c)], 0.03, 0.4, 0.1, "triangle");    // each colour has its own note
+    }
+
+    function throwSound() {
+      tone(400, 0, 0.18, 0.06, "sine", 900);
+    }
+
+    function chime() {
+      [783.99, 987.77, 1174.66].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.12, "triangle"));
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+      lastSaid = time;
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("colourSplashSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function randomTarget() {
+      const h = potSize();
+      return { x: rand(W * 0.08, W * 0.92), y: rand(H * 0.12, Math.max(H * 0.2, H - h * 2)) };
+    }
+
+    function throwPaint(target = randomTarget(), c = colour) {
+      const from = potMouth();
+      const r = clamp(Math.min(W, H) * rand(0.06, 0.12), 30, 140);
+      blobs.push({ sx: from.x, sy: from.y, tx: target.x, ty: target.y, t: 0, r, c });
+      throwSound();
+      wobble = Math.max(wobble, 0.15);
+      lastThrow = time;
+      if (phase !== "playing") return;
+      score++;
+      splatsLeft--;
+      if (splatsLeft === 0) changeIn = 0.5;
+    }
+
+    function nextColour() {
+      let next;
+      do { next = pick(COLOURS); } while (next === colour);
+      colour = next;
+      splatsLeft = SPLATS_PER_COLOUR;
+      wobble = 0.5;
+      chime();
+      say(colour.name);
+    }
+
+    // Stamp a wobbly blob with flicked droplets and a couple of drips onto the painting.
+    function stampSplat(x, y, r, hex) {
+      pctx.fillStyle = hex;
+      pctx.globalAlpha = 0.92;
+
+      const n = 14;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const rr = r * rand(0.75, 1.15);
+        pts.push([x + Math.cos(a) * rr, y + Math.sin(a) * rr]);
+      }
+      const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      pctx.beginPath();
+      pctx.moveTo(...mid(pts[n - 1], pts[0]));
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        const m = mid(p, pts[(i + 1) % n]);
+        pctx.quadraticCurveTo(p[0], p[1], m[0], m[1]);
+      }
+      pctx.fill();
+
+      const droplets = 6 + ((Math.random() * 5) | 0);
+      for (let i = 0; i < droplets; i++) {
+        const a = rand(0, Math.PI * 2);
+        const d = r * rand(1.15, 1.9);
+        pctx.beginPath();
+        pctx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, r * rand(0.05, 0.16), 0, Math.PI * 2);
+        pctx.fill();
+      }
+
+      for (let i = 0; i < 2; i++) {
+        if (Math.random() < 0.4) continue;
+        const dx = rand(-0.5, 0.5) * r;
+        const w = r * rand(0.08, 0.14);
+        const len = r * (0.7 + rand(0.4, 1.0));
+        pctx.fillRect(x + dx - w / 2, y, w, len);
+        pctx.beginPath();
+        pctx.arc(x + dx, y + len, w * 0.75, 0, Math.PI * 2);
+        pctx.fill();
+      }
+      pctx.globalAlpha = 1;
+    }
+
+    function land(b) {
+      stampSplat(b.tx, b.ty, b.r, b.c.hex);
+      splatSound(b.c);
+      for (let i = 0; i < 10; i++) {
+        const a = rand(0, Math.PI * 2);
+        const s = b.r * rand(3, 6);
+        drops.push({
+          x: b.tx, y: b.ty, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          size: b.r * rand(0.05, 0.1), life: rand(0.3, 0.5), age: 0, c: b.c,
+        });
+      }
+      if (phase === "playing" && time - lastSaid > SAY_GAP) say(b.c.name);
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("What a beautiful picture!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+      wobble = Math.max(0, wobble - dt);
+
+      if (changeIn > 0) {
+        changeIn -= dt;
+        if (changeIn <= 0 && phase === "playing") nextColour();
+      }
+
+      for (const b of blobs) {
+        b.t += dt;
+        if (b.t >= FLIGHT_TIME) land(b);
+      }
+      blobs = blobs.filter((b) => b.t < FLIGHT_TIME);
+
+      // Time's up: a rainbow of splats, one of every colour, then admire the picture.
+      if (phase === "finale") {
+        finaleIn -= dt;
+        if (finaleShots > 0 && finaleIn <= 0) {
+          finaleShots--;
+          finaleIn = 0.1;
+          throwPaint(randomTarget(), COLOURS[finaleShots % COLOURS.length]);
+        } else if (finaleShots === 0 && !blobs.length && finaleIn < -1) {
+          finishRound(`You made ${score} splat${score === 1 ? "" : "s"}!`);
+        }
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const d of drops) {
+        d.age += dt;
+        d.vx *= Math.max(0, 1 - 6 * dt);
+        d.vy = d.vy * Math.max(0, 1 - 6 * dt) + 300 * dt;
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+      }
+      drops = drops.filter((d) => d.age < d.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function drawPot() {
+      const h = potSize();
+      const w = h * 0.9;
+      const base = H - 12;
+      const shake = wobble > 0 ? Math.sin(time * 40) * 0.12 * Math.min(1, wobble / 0.3) : 0;
+
+      ctx.save();
+      ctx.translate(W / 2, base);
+      ctx.rotate(shake);
+      ctx.fillStyle = "#c9ced6";
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, -h * 0.75);
+      ctx.lineTo(w / 2, -h * 0.75);
+      ctx.lineTo(w * 0.38, 0);
+      ctx.lineTo(-w * 0.38, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#aab1bc";
+      ctx.fillRect(-w * 0.44, -h * 0.4, w * 0.88, h * 0.08);
+
+      ctx.fillStyle = colour.hex;
+      ctx.beginPath();
+      ctx.ellipse(0, -h * 0.75, w / 2, h * 0.12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(-w * 0.22, -h * 0.75, w * 0.12, h * 0.28);
+      ctx.beginPath();
+      ctx.arc(-w * 0.16, -h * 0.47, w * 0.06, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#8d95a1";
+      ctx.lineWidth = h * 0.04;
+      ctx.beginPath();
+      ctx.ellipse(0, -h * 0.75, w / 2, h * 0.12, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      const size = h * 0.42;
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.22;
+      ctx.strokeStyle = "#fff";
+      const y = base - h * 0.75 - h * 0.25;
+      ctx.strokeText(colour.name, W / 2, y);
+      ctx.fillStyle = colour.hex;
+      ctx.fillText(colour.name, W / 2, y);
+    }
+
+    function draw() {
+      ctx.fillStyle = "#fffaf0";
+      ctx.fillRect(0, 0, W, H);
+      ctx.drawImage(paint, 0, 0, W, H);
+
+      // Paint in flight arcs up out of the pot and lands on the target.
+      for (const b of blobs) {
+        const k = b.t / FLIGHT_TIME;
+        const cx = (b.sx + b.tx) / 2;
+        const cy = Math.min(b.sy, b.ty) - H * 0.2;
+        const x = (1 - k) ** 2 * b.sx + 2 * (1 - k) * k * cx + k ** 2 * b.tx;
+        const y = (1 - k) ** 2 * b.sy + 2 * (1 - k) * k * cy + k ** 2 * b.ty;
+        ctx.fillStyle = b.c.hex;
+        ctx.beginPath();
+        ctx.arc(x, y, b.r * (0.25 + 0.35 * k), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      for (const d of drops) {
+        ctx.globalAlpha = 1 - d.age / d.life;
+        ctx.fillStyle = d.c.hex;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") {
+        drawPot();
+        timer.draw(ctx, W, H);
+      }
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      pctx.clearRect(0, 0, W, H);
+      blobs = [];
+      colour = pick(COLOURS);
+      splatsLeft = SPLATS_PER_COLOUR;
+      changeIn = 0;
+      say(colour.name);
+      timer.start();
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat && time - lastThrow < HELD_KEY_INTERVAL) return;
+      throwPaint();
+    });
+
+    // Tap to splat paint right there (tapping the pot just throws somewhere random).
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const nearPot = Math.abs(e.clientX - W / 2) < potSize() && e.clientY > H - potSize() * 1.5;
+      throwPaint(nearPot ? randomTarget() : { x: e.clientX, y: e.clientY });
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleShots = 14;
+      finaleIn = 0.3;
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
