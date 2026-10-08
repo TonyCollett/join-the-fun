@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Animal Piano</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #2b1a4f;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(255, 255, 255, 0.28); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #fff;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(30, 16, 60, 0.6);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); text-shadow: 0 0 30px #ff8fd8; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Animal Piano</h1>
+    <p>Press any key to play! 🎹</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    // One animal per keyboard row, matched by physical key position (event.code).
+    // Higher rows sing higher: bird at the top, frog down at the bottom.
+    const ROWS = [
+      { animal: "🐦", labels: "1234567890", codes: "Digit1 Digit2 Digit3 Digit4 Digit5 Digit6 Digit7 Digit8 Digit9 Digit0", octave: 2, wave: "sine" },
+      { animal: "🐱", labels: "QWERTYUIOP", codes: "KeyQ KeyW KeyE KeyR KeyT KeyY KeyU KeyI KeyO KeyP", octave: 1, wave: "triangle" },
+      { animal: "🐶", labels: "ASDFGHJKL", codes: "KeyA KeyS KeyD KeyF KeyG KeyH KeyJ KeyK KeyL", octave: 0.5, wave: "square" },
+      { animal: "🐸", labels: "ZXCVBNM", codes: "KeyZ KeyX KeyC KeyV KeyB KeyN KeyM", octave: 0.25, wave: "sawtooth" },
+    ].map((r) => ({ ...r, codes: r.codes.split(" "), bop: 0, tiles: [] }));
+    // Pentatonic steps (in semitones) so any jumble of keys sounds pretty.
+    const PENTATONIC = [0, 2, 4, 7, 9];
+    const MIDDLE_C = 261.63;
+
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    let W = 0, H = 0, bg = null;
+    let notes = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0, finaleSong = [];
+    let dragTile = null;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("animalPianoSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, "#1e1040");
+      bg.addColorStop(1, "#4a2b7a");
+
+      // Four lanes under the timer: animal on the left, its keys stretching right.
+      const top = Math.max(130, H * 0.14);
+      const laneH = (H - top - 16) / ROWS.length;
+      const animal = Math.min(laneH * 0.8, W * 0.14);
+      const left = 16 + animal + 12;
+      const gap = Math.max(4, W * 0.006);
+      ROWS.forEach((row, r) => {
+        row.cy = top + laneH * (r + 0.5);
+        row.ax = 16 + animal / 2;
+        row.size = animal;
+        const n = row.labels.length;
+        const tw = (W - 16 - left - gap * (n - 1)) / n;
+        const th = laneH * 0.78;
+        row.tiles = [...row.labels].map((label, c) => ({
+          label, row: r, col: c,
+          x: left + c * (tw + gap), y: row.cy - th / 2, w: tw, h: th,
+          color: `hsl(${(c * 36) % 360}, 85%, 62%)`,
+          flash: (row.tiles[c] && row.tiles[c].flash) || 0,
+        }));
+      });
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function noteFreq(row, col) {
+      const step = PENTATONIC[col % 5] + 12 * Math.floor(col / 5);
+      return MIDDLE_C * row.octave * 2 ** (step / 12);
+    }
+
+    // Each animal has its own voice; buzzy ones are softened with a filter.
+    function sing(row, col) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const osc = a.createOscillator();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      osc.type = row.wave;
+      osc.frequency.value = noteFreq(row, col);
+      filter.type = "lowpass";
+      filter.frequency.value = row.wave === "sine" || row.wave === "triangle" ? 8000 : 1800;
+      const vol = row.wave === "sine" || row.wave === "triangle" ? 0.3 : 0.18;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+      osc.connect(filter).connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + 0.75);
+    }
+
+    function drum() {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      tone(160, 0, 0.25, 0.5, "sine", 50);
+      const src = a.createBufferSource();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      src.buffer = noise;
+      filter.type = "highpass";
+      filter.frequency.value = 1500;
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      src.connect(filter).connect(gain).connect(master);
+      src.start(t, rand(0, 1.5));
+      src.stop(t + 0.12);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("animalPianoSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function play(r, c) {
+      const row = ROWS[r];
+      const tile = row.tiles[c];
+      sing(row, c);
+      tile.flash = 1;
+      row.bop = 1;
+      if (phase === "playing") score++;
+      notes.push({
+        x: tile.x + tile.w / 2, y: tile.y, vx: rand(-20, 20), vy: -rand(70, 110),
+        size: clamp(tile.h * 0.5, 22, 60), color: tile.color, glyph: pick(["♪", "♫", "♩"]),
+        age: 0, life: 1.4, spin: rand(-0.5, 0.5),
+      });
+    }
+
+    function drumHit() {
+      drum();
+      for (const row of ROWS) row.bop = Math.max(row.bop, 0.6);
+      if (phase === "playing") score++;
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const row of ROWS) {
+        row.bop = Math.max(0, row.bop - dt * 3);
+        for (const t of row.tiles) t.flash = Math.max(0, t.flash - dt * 2.5);
+      }
+
+      // Time's up: the band plays a little run from the frog up to the bird.
+      if (phase === "finale") {
+        finaleT += dt;
+        while (finaleSong.length && finaleSong[0].at <= finaleT) {
+          const n = finaleSong.shift();
+          play(n.row, n.col);
+        }
+        if (!finaleSong.length && finaleT > 3.2) finishRound(`You played ${score} note${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const n of notes) {
+        n.age += dt;
+        n.x += n.vx * dt + Math.sin(n.age * 6) * 0.6;
+        n.y += n.vy * dt;
+      }
+      notes = notes.filter((n) => n.age < n.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function draw() {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // Soft stage spotlights
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = 0; i < 3; i++) {
+        const x = W * (0.2 + i * 0.3) + Math.sin(time * 0.5 + i * 2) * W * 0.05;
+        const g = ctx.createRadialGradient(x, H * 0.55, 0, x, H * 0.55, H * 0.6);
+        g.addColorStop(0, "rgba(255, 200, 255, 0.08)");
+        g.addColorStop(1, "rgba(255, 200, 255, 0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      }
+      ctx.restore();
+
+      for (const row of ROWS) {
+        // Animal in a little spotlight, bopping when it sings
+        ctx.fillStyle = "rgba(255,255,255,0.1)";
+        ctx.beginPath();
+        ctx.arc(row.ax, row.cy, row.size * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        const bop = row.bop;
+        ctx.save();
+        ctx.translate(row.ax, row.cy - bop * row.size * 0.12);
+        ctx.rotate(Math.sin(time * 20) * 0.12 * bop);
+        ctx.scale(1 + bop * 0.15, 1 + bop * 0.15);
+        ctx.font = `${row.size * 0.75}px ${EMOJI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#000";
+        ctx.fillText(row.animal, 0, 0);
+        ctx.restore();
+
+        for (const t of row.tiles) {
+          const grow = t.flash * 0.08;
+          const x = t.x - t.w * grow / 2;
+          const y = t.y - t.h * grow / 2 - t.flash * 4;
+          const w = t.w * (1 + grow);
+          const h = t.h * (1 + grow);
+          const r = Math.min(w, h) * 0.22;
+          ctx.fillStyle = "rgba(0,0,0,0.25)";
+          roundRect(x, y + 5, w, h, r);
+          ctx.fill();
+          ctx.fillStyle = t.color;
+          roundRect(x, y, w, h, r);
+          ctx.fill();
+          if (t.flash > 0) {
+            ctx.fillStyle = `rgba(255,255,255,${t.flash * 0.6})`;
+            roundRect(x, y, w, h, r);
+            ctx.fill();
+          }
+          const fs = Math.min(w * 0.6, h * 0.45);
+          ctx.font = `600 ${fs}px ${FONT}`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.fillText(t.label, x + w / 2, y + h / 2 + fs * 0.05);
+        }
+      }
+
+      for (const n of notes) {
+        ctx.save();
+        ctx.globalAlpha = 1 - n.age / n.life;
+        ctx.translate(n.x, n.y);
+        ctx.rotate(n.spin * n.age);
+        ctx.font = `600 ${n.size}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = n.size * 0.12;
+        ctx.strokeStyle = "#fff";
+        ctx.strokeText(n.glyph, 0, 0);
+        ctx.fillStyle = n.color;
+        ctx.fillText(n.glyph, 0, 0);
+        ctx.restore();
+      }
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      timer.start();
+    }
+
+    function tileAt(x, y) {
+      for (const row of ROWS) {
+        for (const t of row.tiles) {
+          if (x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h) return t;
+        }
+      }
+      return null;
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      for (let r = 0; r < ROWS.length; r++) {
+        const c = ROWS[r].codes.indexOf(e.code);
+        if (c >= 0) { play(r, c); return; }
+      }
+      drumHit(); // space bar, arrows, and everything else are the drum
+    });
+
+    // Tap a key to play it, or slide a finger along a row like a glissando.
+    // Tapping an animal plays its middle note.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const t = tileAt(e.clientX, e.clientY);
+      if (t) {
+        dragTile = t;
+        play(t.row, t.col);
+        return;
+      }
+      const r = ROWS.findIndex((row) => Math.hypot(e.clientX - row.ax, e.clientY - row.cy) < row.size * 0.5);
+      if (r >= 0) play(r, Math.floor(ROWS[r].tiles.length / 2));
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!dragTile || phase !== "playing") return;
+      const t = tileAt(e.clientX, e.clientY);
+      if (t && t !== dragTile) {
+        dragTile = t;
+        play(t.row, t.col);
+      }
+    });
+    addEventListener("pointerup", () => { dragTile = null; });
+    addEventListener("pointercancel", () => { dragTile = null; });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      finaleSong = [];
+      let at = 0.3;
+      for (let r = ROWS.length - 1; r >= 0; r--) {
+        for (const c of [0, 2, 4]) {
+          finaleSong.push({ at, row: r, col: c });
+          at += 0.14;
+        }
+      }
+      // ...and a big finish with everyone together.
+      at += 0.2;
+      for (let r = 0; r < ROWS.length; r++) finaleSong.push({ at, row: r, col: 5 });
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
