@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Key Party</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #bde8ff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    #start {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    #start h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff5d73; text-shadow: 0 6px 0 #fff; }
+    #start p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    #start.hidden { display: none; }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="sky"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start">
+    <h1>Key Party</h1>
+    <p>Press any key! 🎉</p>
+  </div>
+
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const EMOJI = [
+      "🐶", "🐱", "🐸", "🦁", "🐵", "🐷", "🐮", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🐔",
+      "🐧", "🐳", "🐙", "🦋", "🐞", "🐢", "🦄", "🦖", "🐝", "⭐", "🌈", "🚀", "🚂", "🚗",
+      "🎈", "🍎", "🍌", "🍓", "⚽", "🌻", "☀️", "🌙", "❤️", "🎁", "🍦",
+    ];
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    // C major pentatonic over two octaves: any sequence of these sounds nice.
+    const SCALE = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25, 587.33, 659.25, 783.99, 880.0];
+    const ITEM_LIFE = 2.4;        // seconds each friend stays on screen
+    const MAX_ITEMS = 40;
+    const HELD_KEY_INTERVAL = 0.12; // holding a key down spawns at most this often
+
+    const canvas = document.getElementById("sky");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, clouds = [];
+    let items = [], particles = [];
+    let playing = false, time = 0, lastSpawn = -1, lastEmoji = "", noteIndex = 4;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("keyPartySound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#fff3d6");
+      clouds = Array.from({ length: Math.max(3, Math.round(W / 300)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.05, H * 0.6), s: rand(0.6, 1.3), speed: rand(8, 20),
+      }));
+    }
+
+    function itemSize() {
+      return clamp(Math.min(W, H) * 0.18, 70, 180);
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // Wander up and down the scale so mashing keys plays a little tune.
+    function playNote() {
+      const step = pick([-2, -1, 1, 1, 2]);
+      noteIndex += step;
+      if (noteIndex < 0 || noteIndex >= SCALE.length) noteIndex -= step * 2;
+      const f = SCALE[noteIndex];
+      tone(f, 0, 0.8, 0.25, "triangle");
+      tone(f * 2, 0, 0.4, 0.06, "sine");
+      tone(900, 0, 0.06, 0.08, "sine", 300); // tiny "pop"
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("keyPartySound", on ? "on" : "off"); } catch {}
+    }
+
+    // ---------- Game ----------
+
+    // Try a few random spots and keep the one furthest from everyone else on screen.
+    function roomiestSpot() {
+      let best = null, bestDist = -1;
+      for (let i = 0; i < 8; i++) {
+        const x = rand(Math.min(W * 0.15, W / 2), Math.max(W * 0.85, W / 2));
+        const y = rand(Math.min(H * 0.2, H / 2), Math.max(H * 0.75, H / 2));
+        const dist = Math.min(Infinity, ...items.map((it) => Math.hypot(it.x - x, it.y - y)));
+        if (dist > bestDist) { best = { x, y }; bestDist = dist; }
+      }
+      return best;
+    }
+
+    function spawn(x, y, label) {
+      let emoji;
+      do { emoji = pick(EMOJI); } while (emoji === lastEmoji);
+      lastEmoji = emoji;
+      const size = itemSize();
+      if (x === undefined) ({ x, y } = roomiestSpot());
+      items.push({
+        emoji, label, x, y, size,
+        vx: rand(-20, 20), vy: rand(-45, -20),
+        rot: rand(-0.3, 0.3), spin: rand(-0.6, 0.6),
+        age: 0,
+      });
+      if (items.length > MAX_ITEMS) items.shift();
+
+      const color = pick(COLORS);
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const s = size * rand(2, 3.2);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.4, 0.7), age: 0, size: rand(5, 9),
+          color: Math.random() < 0.6 ? color : pick(COLORS),
+        });
+      }
+      playNote();
+      lastSpawn = time;
+    }
+
+    function update(dt) {
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+      for (const it of items) {
+        it.age += dt;
+        it.x += it.vx * dt;
+        it.y += it.vy * dt;
+        it.rot += it.spin * dt;
+      }
+      items = items.filter((it) => it.age < ITEM_LIFE);
+
+      for (const p of particles) {
+        p.age += dt;
+        const d = Math.max(0, 1 - 4 * dt);
+        p.vx *= d;
+        p.vy = p.vy * d + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function drawCloud(c) {
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.scale(c.s, c.s);
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.beginPath();
+      ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+      ctx.arc(0, -10, 50, 0, Math.PI * 2);
+      ctx.arc(55, 10, 38, 0, Math.PI * 2);
+      ctx.arc(0, 20, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawItem(it) {
+      const fadeStart = ITEM_LIFE - 0.6;
+      let scale = easeOutBack(Math.min(1, it.age / 0.35)) * (1 + 0.06 * Math.sin(it.age * 9));
+      let alpha = 1;
+      if (it.age > fadeStart) {
+        const k = (it.age - fadeStart) / 0.6;
+        alpha = 1 - k;
+        scale *= 1 - 0.4 * k;
+      }
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(it.x, it.y);
+      ctx.rotate(it.rot);
+      ctx.scale(scale, scale);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `${it.size}px ${EMOJI_FONT}`;
+      ctx.fillText(it.emoji, 0, 0);
+      if (it.label) {
+        const ls = it.size * 0.38;
+        ctx.font = `600 ${ls}px ${FONT}`;
+        ctx.lineJoin = "round";
+        ctx.lineWidth = ls * 0.2;
+        ctx.strokeStyle = "#fff";
+        ctx.strokeText(it.label, 0, it.size * 0.75);
+        ctx.fillStyle = "#3a2e5c";
+        ctx.fillText(it.label, 0, it.size * 0.75);
+      }
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+      for (const c of clouds) drawCloud(c);
+
+      for (const p of particles) {
+        const a = 1 - p.age / p.life;
+        ctx.globalAlpha = a;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * (0.5 + 0.5 * a), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      for (const it of items) drawItem(it);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (playing) return;
+      playing = true;
+      startScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      spawn(W / 2, H / 2);
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (!playing) { start(); return; }
+      if (e.repeat && time - lastSpawn < HELD_KEY_INTERVAL) return;
+      const label = /^[a-z0-9]$/i.test(e.key) ? e.key.toUpperCase() : undefined;
+      spawn(undefined, undefined, label);
+    });
+
+    // Tap anywhere to make a friend appear right there.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (!playing) { start(); return; }
+      spawn(e.clientX, e.clientY);
+    });
+    startScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
