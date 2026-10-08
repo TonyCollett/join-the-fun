@@ -37,7 +37,7 @@
     .corner:hover { background: rgba(58, 46, 92, 0.22); }
     #home { left: 12px; }
     #sound { right: 12px; }
-    #start {
+    .overlay {
       position: fixed;
       inset: 0;
       z-index: 2;
@@ -53,9 +53,11 @@
       background: rgba(255, 255, 255, 0.35);
       cursor: pointer;
     }
-    #start h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff5d73; text-shadow: 0 6px 0 #fff; }
-    #start p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
-    #start.hidden { display: none; }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff5d73; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
     @keyframes pulse { 50% { transform: scale(1.08); } }
   </style>
 </head>
@@ -65,11 +67,18 @@
   <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
   <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
 
-  <div id="start">
+  <div id="start" class="overlay">
     <h1>Key Party</h1>
     <p>Press any key! 🎉</p>
   </div>
 
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
   <script>
     const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
     const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
@@ -89,6 +98,11 @@
     const ctx = canvas.getContext("2d");
     const startScreen = document.getElementById("start");
     const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
 
     const rand = (a, b) => a + Math.random() * (b - a);
     const pick = (arr) => arr[(Math.random() * arr.length) | 0];
@@ -97,7 +111,9 @@
 
     let W = 0, H = 0, sky = null, clouds = [];
     let items = [], particles = [];
-    let playing = false, time = 0, lastSpawn = -1, lastEmoji = "", noteIndex = 4;
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, lastSpawn = -1, lastEmoji = "", noteIndex = 4, score = 0, restartAt = 0;
+    let finaleShots = 0, finaleIn = 0;
     let soundOn = true;
     try { soundOn = localStorage.getItem("keyPartySound") !== "off"; } catch {}
 
@@ -167,6 +183,14 @@
       tone(900, 0, 0.06, 0.08, "sine", 300); // tiny "pop"
     }
 
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
     function setSound(on) {
       soundOn = on;
       soundBtn.textContent = on ? "🔊" : "🔇";
@@ -188,6 +212,7 @@
     }
 
     function spawn(x, y, label) {
+      if (phase === "playing") score++;
       let emoji;
       do { emoji = pick(EMOJI); } while (emoji === lastEmoji);
       lastEmoji = emoji;
@@ -215,7 +240,30 @@
       lastSpawn = time;
     }
 
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+    }
+
     function update(dt) {
+      timer.update(dt);
+      // Time's up: one last party burst, then celebrate once everyone has floated away.
+      if (phase === "finale") {
+        finaleIn -= dt;
+        if (finaleShots > 0 && finaleIn <= 0) {
+          finaleShots--;
+          finaleIn = 0.12;
+          spawn();
+        } else if (finaleShots === 0 && !items.length) {
+          finishRound(`You made ${score} friend${score === 1 ? "" : "s"}!`);
+        }
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
       for (const c of clouds) {
         c.x += c.speed * dt;
         if (c.x - 120 * c.s > W) c.x = -120 * c.s;
@@ -302,6 +350,8 @@
       ctx.globalAlpha = 1;
 
       for (const it of items) drawItem(it);
+
+      if (phase !== "title") timer.draw(ctx, W, H);
     }
 
     let last = performance.now();
@@ -317,12 +367,17 @@
     // ---------- Input ----------
 
     function start() {
-      if (playing) return;
-      playing = true;
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
       startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
       audio();
       const el = document.documentElement;
-      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      items = [];
+      timer.start();
       spawn(W / 2, H / 2);
     }
 
@@ -330,7 +385,7 @@
       // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
       if (/^F\d+$/.test(e.key)) return;
       e.preventDefault();
-      if (!playing) { start(); return; }
+      if (phase !== "playing") { start(); return; }
       if (e.repeat && time - lastSpawn < HELD_KEY_INTERVAL) return;
       const label = /^[a-z0-9]$/i.test(e.key) ? e.key.toUpperCase() : undefined;
       spawn(undefined, undefined, label);
@@ -338,15 +393,23 @@
 
     // Tap anywhere to make a friend appear right there.
     canvas.addEventListener("pointerdown", (e) => {
-      if (!playing) { start(); return; }
+      if (phase !== "playing") { start(); return; }
       spawn(e.clientX, e.clientY);
     });
     startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
 
     soundBtn.addEventListener("click", () => {
       setSound(!soundOn);
       soundBtn.blur();
     });
+
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleShots = 12;
+      finaleIn = 0;
+    };
 
     setSound(soundOn);
     addEventListener("resize", resize);
