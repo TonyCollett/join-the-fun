@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Letter Pop</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #140d33;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(255, 255, 255, 0.25); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    #start {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #fff;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(20, 13, 51, 0.55);
+      cursor: pointer;
+    }
+    #start h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); text-shadow: 0 0 30px #ff5d73; }
+    #start p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    #start.hidden { display: none; }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="sky"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start">
+    <h1>Letter Pop</h1>
+    <p>Press any key to play! 🎆</p>
+  </div>
+
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const NEXT_LETTER_DELAY = 1.4; // seconds between the bang and the next letter
+    const HINT_INTERVAL = 8;       // re-say the letter if nobody has found it for this long
+
+    const canvas = document.getElementById("sky");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, stars = [];
+    let letter = null, rocket = null, particles = [], flashes = [];
+    let playing = false, lastChar = "", nextLetterIn = 0, time = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("letterPopSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#0b0726");
+      sky.addColorStop(1, "#3a1d6e");
+      stars = Array.from({ length: Math.round((W * H) / 9000) }, () => ({
+        x: rand(0, W), y: rand(0, H), r: rand(0.5, 1.8), phase: rand(0, Math.PI * 2),
+      }));
+      if (letter) letter.size = letterSize();
+    }
+
+    function letterSize() {
+      return clamp(Math.min(W, H) * 0.32, 110, 280);
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function noiseThrough(a, type, freq) {
+      const src = a.createBufferSource();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      src.buffer = noise;
+      filter.type = type;
+      filter.frequency.value = freq;
+      src.connect(filter).connect(gain).connect(master);
+      return { src, filter, gain };
+    }
+
+    function whoosh(dur) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const { src, filter, gain } = noiseThrough(a, "bandpass", 300);
+      filter.Q.value = 3;
+      filter.frequency.setValueAtTime(300, t);
+      filter.frequency.exponentialRampToValueAtTime(2500, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.4, t + dur * 0.7);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.start(t);
+      src.stop(t + dur + 0.05);
+    }
+
+    function boom() {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const { src, filter, gain } = noiseThrough(a, "lowpass", 1800);
+      filter.frequency.setValueAtTime(1800, t);
+      filter.frequency.exponentialRampToValueAtTime(80, t + 1.2);
+      gain.gain.setValueAtTime(0.9, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 1.3);
+      src.start(t);
+      src.stop(t + 1.4);
+      // Sparkly crackles after the bang
+      for (let i = 0; i < 18; i++) {
+        const ct = t + rand(0.25, 1.3);
+        const c = noiseThrough(a, "highpass", 3000);
+        c.gain.gain.setValueAtTime(rand(0.08, 0.2), ct);
+        c.gain.gain.exponentialRampToValueAtTime(0.001, ct + 0.04);
+        c.src.start(ct, rand(0, 1.5));
+        c.src.stop(ct + 0.05);
+      }
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function chime() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(330, 0, 0.15, 0.2, "sine", 220);
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("letterPopSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function spawnLetter() {
+      let char;
+      do { char = pick(CHARS); } while (char === lastChar);
+      lastChar = char;
+      const size = letterSize();
+      const m = size * 0.6;
+      const angle = rand(0, Math.PI * 2);
+      const speed = size * rand(0.35, 0.5);
+      letter = {
+        char, size,
+        x: W > 2 * m ? rand(m, W - m) : W / 2,
+        y: H > 2 * m ? rand(m, H - m) : H / 2,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        color: pick(COLORS),
+        age: 0, shake: 0, pop: 0, lastSaid: 0,
+        state: "floating", // floating -> targeted (rocket on its way) -> popping
+      };
+      chime();
+      say(char);
+    }
+
+    function launch() {
+      const L = letter;
+      L.state = "targeted";
+      const sx = clamp(L.x + rand(-W * 0.15, W * 0.15), 20, W - 20);
+      const dur = 0.55 + ((H - L.y) / H) * 0.35;
+      rocket = { x: sx, y: H + 10, sx, sy: H + 10, tx: L.x, ty: L.y, t: 0, dur };
+      whoosh(dur);
+    }
+
+    function wrongKey() {
+      letter.shake = 0.4;
+      boop();
+    }
+
+    function burst(x, y) {
+      const L = letter;
+      L.state = "popping";
+      L.pop = 0;
+      const speed = L.size * 2.2;
+      const n = 90;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + rand(-0.05, 0.05);
+        const s = speed * rand(0.55, 1);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(1, 1.6), age: 0, size: rand(4, 7), gravity: 120, drag: 1.6,
+          color: Math.random() < 0.6 ? L.color : pick(COLORS),
+          twinkle: Math.random() < 0.3,
+        });
+      }
+      for (let i = 0; i < 30; i++) {
+        const a = rand(0, Math.PI * 2);
+        const s = speed * rand(0.2, 0.45);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(3, 5), gravity: 60, drag: 2,
+          color: "#ffffff", twinkle: true,
+        });
+      }
+      flashes.push({ x, y, r: L.size * 0.9, age: 0, life: 0.35 });
+      boom();
+      nextLetterIn = NEXT_LETTER_DELAY;
+    }
+
+    function update(dt) {
+      if (nextLetterIn > 0) {
+        nextLetterIn -= dt;
+        if (nextLetterIn <= 0 && playing) spawnLetter();
+      }
+
+      const L = letter;
+      if (L) {
+        L.age += dt;
+        L.shake = Math.max(0, L.shake - dt);
+        if (L.state === "floating") {
+          L.x += L.vx * dt;
+          L.y += L.vy * dt;
+          const m = L.size * 0.45;
+          if (L.x < m) { L.x = m; L.vx = Math.abs(L.vx); }
+          if (L.x > W - m) { L.x = W - m; L.vx = -Math.abs(L.vx); }
+          if (L.y < m) { L.y = m; L.vy = Math.abs(L.vy); }
+          if (L.y > H - m) { L.y = H - m; L.vy = -Math.abs(L.vy); }
+          L.lastSaid += dt;
+          if (L.lastSaid > HINT_INTERVAL) { L.lastSaid = 0; say(L.char); }
+        } else if (L.state === "popping") {
+          L.pop += dt;
+          if (L.pop > 0.25) letter = null;
+        }
+      }
+
+      if (rocket) {
+        const R = rocket;
+        R.t += dt;
+        const k = Math.min(1, R.t / R.dur);
+        const e = 1 - (1 - k) * (1 - k);
+        R.x = R.sx + (R.tx - R.sx) * e;
+        R.y = R.sy + (R.ty - R.sy) * e;
+        for (let i = 0; i < 3; i++) {
+          particles.push({
+            x: R.x + rand(-2, 2), y: R.y + rand(-2, 2), vx: rand(-30, 30), vy: rand(20, 80),
+            life: rand(0.3, 0.6), age: 0, size: rand(1.5, 3), gravity: 60, drag: 1,
+            color: pick(["#ffd27a", "#fff2c4", "#ff9f43"]),
+          });
+        }
+        if (k >= 1) { rocket = null; burst(R.tx, R.ty); }
+      }
+
+      for (const p of particles) {
+        p.age += dt;
+        const d = Math.max(0, 1 - p.drag * dt);
+        p.vx *= d;
+        p.vy = p.vy * d + p.gravity * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+
+      for (const f of flashes) f.age += dt;
+      flashes = flashes.filter((f) => f.age < f.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function drawLetter() {
+      const L = letter;
+      if (!L) return;
+      let scale = easeOutBack(Math.min(1, L.age / 0.45));
+      let alpha = 1;
+      if (L.state === "popping") {
+        const k = L.pop / 0.25;
+        scale = 1 + k * 0.6;
+        alpha = 1 - k;
+      }
+      let ox = 0;
+      if (L.shake > 0) ox = Math.sin(L.age * 70) * 10 * (L.shake / 0.4);
+      if (L.state === "targeted") ox = Math.sin(L.age * 90) * 4;
+
+      ctx.save();
+      ctx.translate(L.x + ox, L.y);
+      ctx.rotate(Math.sin(L.age * 1.8) * 0.12);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = alpha;
+      ctx.font = `600 ${L.size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      const m = ctx.measureText(L.char);
+      const dy = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+      ctx.lineJoin = "round";
+      ctx.lineWidth = L.size * 0.07;
+      ctx.strokeStyle = "#fff";
+      ctx.shadowColor = L.color;
+      ctx.shadowBlur = L.size * 0.25;
+      ctx.strokeText(L.char, 0, dy);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = L.color;
+      ctx.fillText(L.char, 0, dy);
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "#fff";
+      for (const s of stars) {
+        ctx.globalAlpha = 0.35 + 0.35 * Math.sin(time * 1.5 + s.phase);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      drawLetter();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (const f of flashes) {
+        const k = f.age / f.life;
+        const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (0.6 + k));
+        g.addColorStop(0, `rgba(255,255,255,${0.9 * (1 - k)})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(f.x - f.r * 2, f.y - f.r * 2, f.r * 4, f.r * 4);
+      }
+      ctx.lineCap = "round";
+      for (const p of particles) {
+        let a = 1 - p.age / p.life;
+        a *= a;
+        if (p.twinkle) a *= 0.5 + 0.5 * Math.sin(p.age * 40);
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = p.size;
+        ctx.beginPath();
+        ctx.moveTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+      if (rocket) {
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#fff6d5";
+        ctx.beginPath();
+        ctx.arc(rocket.x, rocket.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (playing) return;
+      playing = true;
+      startScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      spawnLetter();
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (!playing) { start(); return; }
+      if (e.repeat || e.key.length !== 1) return;
+      if (!letter || letter.state !== "floating") return;
+      if (e.key.toUpperCase() === letter.char) launch();
+      else wrongKey();
+    });
+
+    // Tapping the letter works too, for touch screens.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (!playing) { start(); return; }
+      const L = letter;
+      if (L && L.state === "floating" && Math.hypot(e.clientX - L.x, e.clientY - L.y) < L.size * 0.6) launch();
+    });
+    startScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
