@@ -84,12 +84,16 @@
     const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
     const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
     const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
-    const WORDS = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+    const WORDS = [
+      "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+      "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty",
+    ];
     const MAMA = "🦆";
     const CHICK = "🐤";
-    const PARADE_SIZE = 10;   // ducklings before everyone heads to the pond
-    const MARCH_DELAY = 1.2;  // pause after the tenth so "Ten!" can be heard
+    const PARADE_SIZE = 20;   // ducklings before everyone heads to the pond
+    const MARCH_DELAY = 1.4;  // pause after the last one so "Twenty!" can be heard
     const SWIM_TIME = 2.2;    // seconds a duck paddles before fading away
+    const LETTER_LIFE = 2.2;  // seconds a typed letter peeks over the hill
 
     const canvas = document.getElementById("park");
     const ctx = canvas.getContext("2d");
@@ -108,7 +112,8 @@
 
     let W = 0, H = 0, sky = null, flowers = [], clouds = [];
     let L = {}; // layout: sizes, ground line, pond, where mama stands
-    let ducks = [], particles = [];
+    let ducks = [], particles = [], letters = [];
+    let ghost = null; // see-through duckling waiting in the next spot
     let count = 0, parade = "lining", paradeT = 0; // lining -> waiting -> marching
     let phase = "title"; // title -> playing -> finale (time's up) -> done
     let time = 0, score = 0, restartAt = 0, lastQuack = 0;
@@ -130,15 +135,23 @@
 
       const landscape = W >= H * 1.1;
       const mama = clamp(Math.min(W, H) * 0.16, 64, 160);
-      const chick = mama * 0.6;
       const pondRx = clamp(W * 0.14, 50, 260);
       const ground = H * (landscape ? 0.66 : 0.56);
       const pond = { cx: 16 + pondRx * 0.9, cy: ground + pondRx * 0.15, rx: pondRx, ry: pondRx * 0.35 };
       const mamaX = pond.cx + pond.rx + mama * 0.5;
-      const gap = chick * 1.05;
       // Ducklings line up behind mama, wrapping onto extra rows if the screen is narrow.
-      const perRow = Math.max(1, Math.floor((W - 16 - mamaX - mama * 0.35) / gap));
-      L = { mama, chick, gap, ground, pond, mamaX, perRow, horizon: ground - H * 0.16 };
+      // Shrink them until a full parade fits on the grass.
+      let chick = mama * 0.6, gap, perRow;
+      for (;;) {
+        gap = chick * 1.05;
+        perRow = Math.max(1, Math.floor((W - 16 - mamaX - mama * 0.35) / gap));
+        const rows = Math.ceil(PARADE_SIZE / perRow);
+        if (ground + (rows - 1) * chick * 1.4 + chick * 0.2 <= H - 8 || chick < 20) break;
+        chick *= 0.92;
+      }
+      const horizon = ground - H * 0.16;
+      const hill = { cx: W * 0.75, cy: horizon + H * 0.04, rx: W * 0.6, ry: H * 0.12 };
+      L = { mama, chick, gap, ground, pond, mamaX, perRow, horizon, hill };
 
       flowers = Array.from({ length: Math.round(W / 25) }, () => ({
         x: rand(0, W), y: rand(L.horizon + H * 0.04, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
@@ -157,6 +170,13 @@
         x: L.mamaX + L.mama * 0.35 + L.gap * (col + 0.6),
         y: L.ground - L.chick * 0.45 + row * L.chick * 1.4,
       };
+    }
+
+    // Top edge of the hills at x (the flat meadow where the big hill doesn't reach).
+    function hillTop(x) {
+      const h = L.hill;
+      const u = (x - h.cx) / h.rx;
+      return Math.abs(u) < 1 ? h.cy - h.ry * Math.sqrt(1 - u * u) : h.cy;
     }
 
     // ---------- Sound ----------
@@ -277,6 +297,20 @@
       ducks.push({ kind: "mama", slot: -1, x: p.x, y: p.y, state: "stand", t: 0, alpha: 1 });
     }
 
+    function newParade() {
+      count = 0;
+      parade = "lining";
+      newMama();
+      spawnGhost();
+    }
+
+    // A see-through duckling waddles in to show where the next number will go.
+    function spawnGhost() {
+      ghost = count < PARADE_SIZE
+        ? { kind: "ghost", slot: count, n: count + 1, x: W + L.chick, y: slotPos(count).y, state: "walkin", t: 0, alpha: 0.35 }
+        : null;
+    }
+
     function addDuckling() {
       if (parade !== "lining") {
         if (time - lastQuack > 0.4) quack();
@@ -285,17 +319,38 @@
       const slot = count;
       count++;
       if (phase === "playing") score++;
-      ducks.push({ kind: "chick", slot, n: count, x: W + L.chick, y: slotPos(slot).y, state: "walkin", t: 0, alpha: 1 });
+      // The ghost (if it's made it on screen) turns into the real duckling right where it is.
+      const x = ghost && ghost.slot === slot ? Math.min(ghost.x, W + L.chick) : W + L.chick;
+      ducks.push({ kind: "chick", slot, n: count, x, y: slotPos(slot).y, state: "walkin", t: 0, alpha: 1 });
       peep();
       say(`${WORDS[count - 1]}!`);
       if (count === PARADE_SIZE) {
         parade = "waiting";
         paradeT = 0;
       }
+      spawnGhost();
+    }
+
+    function popLetter(ch) {
+      const size = clamp(H * 0.13, 48, 140);
+      // Only as many as fit side by side; the oldest ducks back down early to make room.
+      let up = letters.filter((l) => l.t < LETTER_LIFE);
+      const room = Math.max(3, Math.floor((W * 0.84) / (size * 1.2)));
+      for (const l of up.slice(0, Math.max(0, up.length + 1 - room))) l.t = LETTER_LIFE;
+      up = up.filter((l) => l.t < LETTER_LIFE);
+      // Try a few spots and keep the one furthest from letters still showing.
+      let best = 0, bestGap = -1;
+      for (let i = 0; i < 8; i++) {
+        const x = rand(W * 0.08, W * 0.92);
+        const gap = Math.min(Infinity, ...up.map((l) => Math.abs(l.x - x)));
+        if (gap > bestGap) { best = x; bestGap = gap; }
+      }
+      letters.push({ ch, x: best, size, color: pick(COLORS), t: 0, tilt: rand(-0.15, 0.15) });
     }
 
     function startMarch() {
       parade = "marching";
+      ghost = null;
       for (const d of ducks) {
         if (d.state === "swim") continue;
         d.state = "march";
@@ -365,13 +420,23 @@
       }
       ducks = ducks.filter((d) => d.alpha > 0);
 
+      if (ghost) {
+        ghost.t += dt;
+        const p = slotPos(ghost.slot);
+        ghost.y = p.y;
+        ghost.x = Math.max(p.x, ghost.x - Math.max(110, W * 0.18) * dt);
+        ghost.state = ghost.x > p.x ? "walkin" : "stand";
+        ghost.alpha = 0.32 + Math.sin(time * 4) * 0.08;
+      }
+
+      for (const l of letters) l.t += dt;
+      letters = letters.filter((l) => l.t < LETTER_LIFE + 0.5);
+
       paradeT += dt;
       if (parade === "waiting" && paradeT > MARCH_DELAY) startMarch();
       if (parade === "marching" && !ducks.length) {
         if (phase === "playing") {
-          count = 0;
-          parade = "lining";
-          newMama();
+          newParade();
           cheer();
           say(`${PARADE_SIZE} ducklings! Splash!`);
         } else if (phase === "finale") {
@@ -414,12 +479,16 @@
         ctx.restore();
       }
 
+      // Typed letters sit behind the hills so they can pop up over them.
+      for (const l of letters) drawLetter(l);
+
+      const h = L.hill;
       ctx.fillStyle = "#9bd88a";
       ctx.beginPath();
-      ctx.ellipse(W * 0.75, L.horizon + H * 0.04, W * 0.6, H * 0.12, 0, 0, Math.PI * 2);
+      ctx.ellipse(h.cx, h.cy, h.rx, h.ry, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#6cbf5c";
-      ctx.fillRect(0, L.horizon + H * 0.04, W, H);
+      ctx.fillRect(0, h.cy, W, H);
       for (const f of flowers) {
         ctx.fillStyle = f.color;
         ctx.beginPath();
@@ -459,6 +528,30 @@
       }
     }
 
+    // A letter springs up from behind the hill, bobs for a bit, then sinks back down.
+    function drawLetter(l) {
+      const top = hillTop(l.x);
+      const hidden = top + l.size * 0.85;
+      const shown = top - l.size * 0.12;
+      const up = easeOutBack(Math.min(1, l.t / 0.45));
+      const down = clamp((l.t - LETTER_LIFE) / 0.5, 0, 1);
+      const y = hidden + (shown - hidden) * up * (1 - down * down) + Math.sin(l.t * 3) * l.size * 0.03;
+      ctx.save();
+      ctx.globalAlpha = 1 - down;
+      ctx.translate(l.x, y);
+      ctx.rotate(l.tilt + Math.sin(l.t * 2.5) * 0.06);
+      ctx.font = `600 ${l.size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = l.size * 0.16;
+      ctx.strokeStyle = "#fff";
+      ctx.strokeText(l.ch, 0, 0);
+      ctx.fillStyle = l.color;
+      ctx.fillText(l.ch, 0, 0);
+      ctx.restore();
+    }
+
     function drawDuck(d) {
       const size = d.kind === "mama" ? L.mama : L.chick;
       const phaseOff = d.slot * 0.7;
@@ -488,13 +581,28 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      // Wash the ghost out towards white so it reads as a ghost, not just a faint duck.
+      if (d.kind === "ghost") ctx.filter = "grayscale(0.6) brightness(1.5)";
       ctx.fillText(d.kind === "mama" ? MAMA : CHICK, 0, 0);
       ctx.restore();
     }
 
     // Each duckling wears its number; the newest one pops in big.
     function drawNumber(d) {
-      if (d.kind !== "chick" || d.state === "swim") return;
+      if (d.kind === "mama" || d.state === "swim") return;
+      if (d.kind === "ghost") {
+        // The next number, faint and bobbing, waiting to be typed.
+        const size = L.chick * 0.5;
+        ctx.save();
+        ctx.globalAlpha = d.alpha + 0.15;
+        ctx.font = `600 ${size}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillStyle = "#fff";
+        ctx.fillText(d.n, d.x, d.y - L.chick * 0.65 + Math.sin(time * 4) * 3);
+        ctx.restore();
+        return;
+      }
       const newest = d.n === count && parade === "lining";
       const size = L.chick * 0.55 * (newest ? 1.5 : 1) * easeOutBack(Math.min(1, d.t / 0.4));
       if (size <= 0) return;
@@ -513,7 +621,7 @@
     function draw() {
       drawScene();
       // Back rows first so nearer ducklings overlap the ones behind.
-      const sorted = [...ducks].sort((a, b) => a.y - b.y);
+      const sorted = [...ducks, ...(ghost ? [ghost] : [])].sort((a, b) => a.y - b.y);
       for (const d of sorted) drawDuck(d);
       for (const d of sorted) drawNumber(d);
 
@@ -552,9 +660,8 @@
       const el = document.documentElement;
       if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
       ducks = [];
-      count = 0;
-      parade = "lining";
-      newMama();
+      letters = [];
+      newParade();
       quack();
       timer.start();
     }
@@ -565,6 +672,7 @@
       e.preventDefault();
       if (phase !== "playing") { start(); return; }
       if (e.repeat) return;
+      if (/^[a-z0-9]$/i.test(e.key)) popLetter(e.key.toUpperCase());
       addDuckling();
     });
 
