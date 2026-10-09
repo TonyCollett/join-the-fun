@@ -91,6 +91,7 @@
     const MAMA = "🦆";
     const CHICK = "🐤";
     const PARADE_SIZE = 20;   // ducklings before everyone heads to the pond
+    const ROW_SIZE = 10;      // most ducklings in one row, so the rows read 1–10 and 11–20
     const MARCH_DELAY = 1.4;  // pause after the last one so "Twenty!" can be heard
     const SWIM_TIME = 2.2;    // seconds a duck paddles before fading away
     const LETTER_LIFE = 2.2;  // seconds a typed letter peeks over the hill
@@ -113,7 +114,8 @@
     let W = 0, H = 0, sky = null, flowers = [], clouds = [];
     let L = {}; // layout: sizes, ground line, pond, where mama stands
     let ducks = [], particles = [], letters = [];
-    let ghost = null; // see-through duckling waiting in the next spot
+    let ghost = null; // see-through duckling waiting at the right edge for its number
+    let typed = "";   // digits typed so far towards the ghost's number (e.g. "1" of 10)
     let count = 0, parade = "lining", paradeT = 0; // lining -> waiting -> marching
     let phase = "title"; // title -> playing -> finale (time's up) -> done
     let time = 0, score = 0, restartAt = 0, lastQuack = 0;
@@ -139,12 +141,13 @@
       const ground = H * (landscape ? 0.66 : 0.56);
       const pond = { cx: 16 + pondRx * 0.9, cy: ground + pondRx * 0.15, rx: pondRx, ry: pondRx * 0.35 };
       const mamaX = pond.cx + pond.rx + mama * 0.5;
-      // Ducklings line up behind mama, wrapping onto extra rows if the screen is narrow.
+      // Ducklings line up behind mama, wrapping onto extra rows if the screen is narrow,
+      // leaving a spot at the right edge for the ghost to wait in.
       // Shrink them until a full parade fits on the grass.
       let chick = mama * 0.6, gap, perRow;
       for (;;) {
         gap = chick * 1.05;
-        perRow = Math.max(1, Math.floor((W - 16 - mamaX - mama * 0.35) / gap));
+        perRow = clamp(Math.floor((W - 16 - mamaX - mama * 0.35 - gap * 1.1) / gap), 1, ROW_SIZE);
         const rows = Math.ceil(PARADE_SIZE / perRow);
         if (ground + (rows - 1) * chick * 1.4 + chick * 0.2 <= H - 8 || chick < 20) break;
         chick *= 0.92;
@@ -304,11 +307,24 @@
       spawnGhost();
     }
 
-    // A see-through duckling waddles in to show where the next number will go.
+    // A see-through duckling waddles in and waits at the right edge, wearing the next number.
     function spawnGhost() {
+      typed = "";
       ghost = count < PARADE_SIZE
         ? { kind: "ghost", slot: count, n: count + 1, x: W + L.chick, y: slotPos(count).y, state: "walkin", t: 0, alpha: 0.35 }
         : null;
+    }
+
+    // The ghost joins the parade once its whole number is typed; wrong digits are ignored.
+    function typeDigit(d) {
+      if (!ghost || parade !== "lining") return;
+      const target = String(ghost.n);
+      const next = typed + d;
+      if (next === target) addDuckling();
+      else if (target.startsWith(next)) {
+        typed = next;
+        tone(1400, 0, 0.06, 0.08, "sine", 1700);
+      }
     }
 
     function addDuckling() {
@@ -422,10 +438,10 @@
 
       if (ghost) {
         ghost.t += dt;
-        const p = slotPos(ghost.slot);
-        ghost.y = p.y;
-        ghost.x = Math.max(p.x, ghost.x - Math.max(110, W * 0.18) * dt);
-        ghost.state = ghost.x > p.x ? "walkin" : "stand";
+        const waitX = W - 8 - L.chick * 0.55;
+        ghost.y = slotPos(ghost.slot).y;
+        ghost.x = Math.max(waitX, ghost.x - Math.max(110, W * 0.18) * dt);
+        ghost.state = ghost.x > waitX ? "walkin" : "stand";
         ghost.alpha = 0.32 + Math.sin(time * 4) * 0.08;
       }
 
@@ -591,15 +607,26 @@
     function drawNumber(d) {
       if (d.kind === "mama" || d.state === "swim") return;
       if (d.kind === "ghost") {
-        // The next number, faint and bobbing, waiting to be typed.
-        const size = L.chick * 0.5;
+        // The number to type, bobbing; digits already typed light up in colour.
+        const size = L.chick * 0.6;
+        const text = String(d.n);
+        const y = d.y - L.chick * 0.7 + Math.sin(time * 4) * 3;
         ctx.save();
-        ctx.globalAlpha = d.alpha + 0.15;
         ctx.font = `600 ${size}px ${FONT}`;
-        ctx.textAlign = "center";
+        ctx.textAlign = "left";
         ctx.textBaseline = "alphabetic";
-        ctx.fillStyle = "#fff";
-        ctx.fillText(d.n, d.x, d.y - L.chick * 0.65 + Math.sin(time * 4) * 3);
+        ctx.lineJoin = "round";
+        ctx.lineWidth = size * 0.22;
+        let x = Math.min(d.x - ctx.measureText(text).width / 2, W - 8 - ctx.measureText(text).width);
+        for (let i = 0; i < text.length; i++) {
+          const done = i < typed.length;
+          ctx.globalAlpha = done ? 1 : 0.65;
+          ctx.strokeStyle = "#fff";
+          ctx.strokeText(text[i], x, y);
+          ctx.fillStyle = done ? COLORS[(d.n - 1) % COLORS.length] : "#b9b4c9";
+          ctx.fillText(text[i], x, y);
+          x += ctx.measureText(text[i]).width;
+        }
         ctx.restore();
         return;
       }
@@ -672,8 +699,9 @@
       e.preventDefault();
       if (phase !== "playing") { start(); return; }
       if (e.repeat) return;
-      if (/^[a-z0-9]$/i.test(e.key)) popLetter(e.key.toUpperCase());
-      addDuckling();
+      if (/^[a-z]$/i.test(e.key)) popLetter(e.key.toUpperCase());
+      else if (/^[0-9]$/.test(e.key)) typeDigit(e.key);
+      else if (e.key === "Backspace") typed = "";
     });
 
     canvas.addEventListener("pointerdown", () => {
