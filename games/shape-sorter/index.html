@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Shape Sorter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #ffe9c9;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #3fbf6a; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="room"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Shape Sorter</h1>
+    <p>Press any key to play! ⭐</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const SHAPES = [
+      { kind: "circle", name: "Circle" },
+      { kind: "square", name: "Square" },
+      { kind: "triangle", name: "Triangle" },
+      { kind: "star", name: "Star" },
+      { kind: "heart", name: "Heart" },
+      { kind: "diamond", name: "Diamond" },
+    ];
+    // Colours the shapes come in, with the words the voice uses for them in later rounds.
+    const PAINTS = [
+      { name: "red", color: "#ff5d73" },
+      { name: "orange", color: "#ff8c42" },
+      { name: "yellow", color: "#ffd23f" },
+      { name: "green", color: "#4cc96a" },
+      { name: "blue", color: "#5b8def" },
+      { name: "purple", color: "#b15ef0" },
+      { name: "pink", color: "#ff8fd8" },
+    ];
+    // How far down each shape's face sits, so it looks centred in the shape (in units of the shape size).
+    const FACE_Y = { circle: 0, square: 0, triangle: 0.12, star: 0.05, heart: -0.02, diamond: 0 };
+    const FEW_HOLES = 3;       // holes on the box to begin with
+    const MANY_HOLES = 4;      // holes once the first few shapes are in
+    const MORE_HOLES_AT = 5;   // shapes sorted before the fourth hole appears
+    const COLOUR_NAMES_AT = 8; // shapes sorted before the voice names the colour too ("The red star!")
+    const DROP_TIME = 0.7;     // seconds for a shape to fall in from the top
+    const FLY_TIME = 0.4;      // seconds to glide over to its hole
+    const PLOP_TIME = 0.3;     // seconds to sink through the hole
+    const NEXT_DELAY = 1.4;    // pause before the next shape drops, so the voice can finish
+    const SWAP_TIME = 0.4;     // seconds for fresh holes to pop in
+    const HINT_TIME = 1.6;     // seconds the right hole glows after a wrong guess
+    const IDLE_HINT = 8;       // seconds of nothing before the right hole glows by itself
+    const FINALE_SHAPES = 16;  // most shapes that burst out of the box at the end
+
+    const canvas = document.getElementById("room");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+    const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    let W = 0, H = 0, wall = null;
+    let L = {}; // layout: the box, the floor, where the shape hovers and how big it is
+    let holes = [];   // { kind, label, x, y, s, cell, t, poke, glow, flash }
+    let shape = null; // the shape in play: { kind, name, paint, state, t, spin, ... }
+    let sorted = [];  // shapes posted this round, so they can all burst out at the end
+    let flyers = [], particles = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0, nextIn = 0, lastSpoke = -10;
+    let lastKind = null, lastPaint = null;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("shapeSorterSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      wall = ctx.createLinearGradient(0, 0, 0, H);
+      wall.addColorStop(0, "#fff6e6");
+      wall.addColorStop(1, "#ffe2b8");
+      layout();
+    }
+
+    // The box fills the bottom of the screen with its holes in a row on wide screens,
+    // or two to a row on tall ones so each hole stays big enough to tap.
+    function layout() {
+      const landscape = W >= H * 1.1;
+      const n = holes.length;
+      const cols = landscape ? n : 2;
+      const rows = Math.ceil(n / cols);
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const boxW = Math.min(W - 32, landscape ? H * 1.7 : W);
+      const boxH = landscape ? H * 0.38 : Math.min(H * 0.44, boxW);
+      const box = { x: (W - boxW) / 2, y: H - 16 - boxH, w: boxW, h: boxH, lid: boxH * 0.1 };
+      const faceY = box.y + box.lid;
+      const cellW = boxW / cols;
+      const cellH = (boxH - box.lid) / rows;
+      const s = Math.min(cellW * 0.62, cellH * 0.56);
+      holes.forEach((h, i) => {
+        const row = Math.floor(i / cols);
+        const inRow = Math.min(cols, n - row * cols);
+        const x0 = box.x + (cols - inRow) * cellW / 2 + (i % cols) * cellW; // centre a short last row
+        const y0 = faceY + row * cellH;
+        Object.assign(h, { x: x0 + cellW / 2, y: y0 + cellH * 0.42, s, cell: { x: x0, y: y0, w: cellW, h: cellH } });
+        h.signR = Math.min(s * 0.2, cellH * 0.11);
+        h.signY = y0 + cellH * 0.86;
+      });
+      // The shape bobs in the space between the clock and the box.
+      const top = 14 + 2 * R + 10;
+      const bottom = box.y - 10;
+      const size = clamp((bottom - top) * 0.8, s, s * 1.6);
+      L = { box, floorY: box.y + box.h * 0.6, hoverX: W / 2, hoverY: (top + bottom) / 2, size, s };
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function whoosh() {
+      tone(1100, 0, 0.4, 0.08, "sine", 300); // falling slide whistle
+    }
+
+    // A wet "bloop" as the shape drops through, then a happy little chime.
+    function plopSound() {
+      tone(900, 0, 0.12, 0.3, "sine", 140);
+      tone(110, 0.08, 0.2, 0.25, "sine", 60);
+      [659.25, 783.99, 1046.5].forEach((f, i) => tone(f, 0.18 + i * 0.08, 0.3, 0.13, "triangle"));
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    let lastBoing = 0;
+    function boing() {
+      if (time - lastBoing < 0.15) return;
+      lastBoing = time;
+      tone(280, 0, 0.25, 0.12, "triangle", 620);
+    }
+
+    function popSound() {
+      tone(rand(500, 800), 0, 0.12, 0.12, "sine", 1500);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      lastSpoke = time;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("shapeSorterSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function setHoles(list) {
+      holes = list.map((sh, i) => ({ kind: sh.kind, label: i + 1, t: 0, poke: 0, glow: 0, flash: 0 }));
+      layout();
+    }
+
+    // A new shape falls in, and the box gets a fresh set of holes with one that fits it.
+    function nextShape(delay = 0) {
+      const n = score >= MORE_HOLES_AT ? MANY_HOLES : FEW_HOLES;
+      const target = pick(SHAPES.filter((sh) => sh.kind !== lastKind));
+      lastKind = target.kind;
+      const others = shuffle(SHAPES.filter((sh) => sh !== target)).slice(0, n - 1);
+      setHoles(shuffle([target, ...others]));
+      const paint = pick(PAINTS.filter((p) => p !== lastPaint));
+      lastPaint = paint;
+      shape = { ...target, paint, state: "drop", t: -delay, spin: 0, waited: 0 };
+      if (delay === 0) whoosh();
+    }
+
+    // Where the shape is right now, and how big.
+    function shapePos() {
+      const sh = shape;
+      if (sh.state === "drop") {
+        const u = easeOutBack(clamp(sh.t / DROP_TIME, 0, 1));
+        return { x: L.hoverX, y: lerp(-L.size, L.hoverY, u), size: L.size };
+      }
+      if (sh.state === "wait") return { x: L.hoverX, y: L.hoverY + Math.sin(sh.t * 2.5) * L.size * 0.04, size: L.size };
+      const h = sh.hole;
+      if (sh.state === "fly") {
+        const u = easeInOut(clamp(sh.t / FLY_TIME, 0, 1));
+        // A little hop up on the way over.
+        return { x: lerp(sh.fromX, h.x, u), y: lerp(sh.fromY, h.y, u) - Math.sin(u * Math.PI) * L.size * 0.25, size: lerp(sh.fromSize, h.s, u) };
+      }
+      const u = clamp(sh.t / PLOP_TIME, 0, 1); // plop: shrink away into the hole
+      return { x: h.x, y: h.y + u * h.s * 0.1, size: h.s * (1 - u * u) };
+    }
+
+    function canPost() {
+      return shape && (shape.state === "drop" || shape.state === "wait") && shape.t >= 0;
+    }
+
+    // Try the shape in a hole: the right one swallows it, any other just gives a little shake.
+    function post(h) {
+      if (!canPost()) { h.poke = 0.4; boop(); return; }
+      if (h.kind === shape.kind) {
+        const p = shapePos();
+        Object.assign(shape, { state: "fly", t: 0, hole: h, fromX: p.x, fromY: p.y, fromSize: p.size });
+        tone(500, 0, 0.3, 0.08, "sine", 900);
+      } else {
+        h.poke = 0.4;
+        boop();
+        const right = holes.find((x) => x.kind === shape.kind);
+        if (right) right.glow = HINT_TIME;
+      }
+    }
+
+    // Poking the shape (or a key that isn't a hole's number) makes it spin and say its name.
+    function pokeShape() {
+      if (!canPost()) return;
+      shape.spin = 0.5;
+      boing();
+      if (time - lastSpoke > 2.5) say(`${shape.name}!`);
+    }
+
+    function plopped() {
+      const sh = shape, h = sh.hole;
+      score++;
+      sorted.push({ kind: sh.kind, paint: sh.paint });
+      h.flash = 0.6;
+      plopSound();
+      sparkle(h.x, h.y, h.s * 0.6);
+      say(score > COLOUR_NAMES_AT ? `The ${sh.paint.name} ${sh.name.toLowerCase()}!` : `${sh.name}!`);
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const h of holes) {
+        h.t += dt;
+        h.poke = Math.max(0, h.poke - dt);
+        h.glow = Math.max(0, h.glow - dt);
+        h.flash = Math.max(0, h.flash - dt);
+      }
+
+      if (shape) {
+        const sh = shape;
+        const wasHidden = sh.t < 0;
+        sh.t += dt;
+        sh.spin = Math.max(0, sh.spin - dt);
+        if (wasHidden && sh.t >= 0) whoosh();
+        if (sh.state === "drop" && sh.t >= DROP_TIME) {
+          sh.state = "wait";
+          sh.t = 0;
+        } else if (sh.state === "wait") {
+          // Stuck? Light up the right hole and ask again.
+          sh.waited += dt;
+          if (sh.waited > IDLE_HINT) {
+            sh.waited = 0;
+            const right = holes.find((x) => x.kind === sh.kind);
+            if (right) right.glow = HINT_TIME;
+            say(`Where does the ${sh.name.toLowerCase()} go?`);
+          }
+        } else if (sh.state === "fly" && sh.t >= FLY_TIME) {
+          sh.state = "plop";
+          sh.t = 0;
+          plopped();
+        } else if (sh.state === "plop" && sh.t >= PLOP_TIME) {
+          shape = null;
+          if (phase === "playing") nextIn = NEXT_DELAY;
+        }
+      }
+
+      if (phase === "playing" && !shape && nextIn > 0) {
+        nextIn -= dt;
+        if (nextIn <= 0) nextShape();
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 4) finishRound(`You sorted ${score} shape${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const f of flyers) {
+        if (f.delay > 0) {
+          f.delay -= dt;
+          if (f.delay <= 0) popSound();
+          continue;
+        }
+        f.vy += H * 1.6 * dt;
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+        f.rot += f.vr * dt;
+      }
+      flyers = flyers.filter((f) => f.y < H + f.size);
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    // Each shape as a path roughly one unit across, centred on the origin.
+    function shapePath(c, kind) {
+      c.beginPath();
+      if (kind === "circle") {
+        c.arc(0, 0, 0.48, 0, Math.PI * 2);
+      } else if (kind === "square") {
+        roundRect(c, -0.43, -0.43, 0.86, 0.86, 0.08);
+      } else if (kind === "triangle") {
+        c.moveTo(0, -0.48);
+        c.lineTo(0.52, 0.42);
+        c.lineTo(-0.52, 0.42);
+        c.closePath();
+      } else if (kind === "star") {
+        for (let i = 0; i < 10; i++) {
+          const a = -Math.PI / 2 + (i * Math.PI) / 5;
+          const r = i % 2 ? 0.23 : 0.54;
+          c.lineTo(Math.cos(a) * r, Math.sin(a) * r + 0.04);
+        }
+        c.closePath();
+      } else if (kind === "heart") {
+        c.moveTo(0, 0.46);
+        c.bezierCurveTo(-0.3, 0.25, -0.55, 0.02, -0.5, -0.2);
+        c.bezierCurveTo(-0.45, -0.5, -0.05, -0.5, 0, -0.24);
+        c.bezierCurveTo(0.05, -0.5, 0.45, -0.5, 0.5, -0.2);
+        c.bezierCurveTo(0.55, 0.02, 0.3, 0.25, 0, 0.46);
+        c.closePath();
+      } else if (kind === "diamond") {
+        c.moveTo(0, -0.52);
+        c.lineTo(0.4, 0);
+        c.lineTo(0, 0.52);
+        c.lineTo(-0.4, 0);
+        c.closePath();
+      }
+    }
+
+    function roundRect(c, x, y, w, h, r) {
+      c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r);
+      c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r);
+      c.arcTo(x, y, x + w, y, r);
+      c.closePath();
+    }
+
+    // A chunky coloured shape with a shine and a smiley face.
+    function drawShape(kind, color, x, y, size, rot = 0) {
+      if (size <= 0) return;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.scale(size, size);
+      shapePath(ctx, kind);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 0.05;
+      ctx.strokeStyle = "rgba(58, 46, 92, 0.35)";
+      ctx.stroke();
+
+      ctx.save();
+      ctx.clip();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+      ctx.beginPath();
+      ctx.ellipse(-0.17, -0.2, 0.14, 0.07, -0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      const fy = FACE_Y[kind];
+      ctx.fillStyle = "#3a2e5c";
+      ctx.beginPath();
+      ctx.arc(-0.11, fy - 0.03, 0.045, 0, Math.PI * 2);
+      ctx.arc(0.11, fy - 0.03, 0.045, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#3a2e5c";
+      ctx.lineWidth = 0.035;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.arc(0, fy + 0.03, 0.09, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Party bunting strung across the top of the wall.
+    function drawBunting() {
+      const flag = clamp(Math.min(W, H) * 0.045, 16, 40);
+      const sag = flag * 1.4;
+      for (const [x0, x1] of [[0, W / 2], [W / 2, W]]) {
+        ctx.strokeStyle = "#c9a27a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x0, 4);
+        ctx.quadraticCurveTo((x0 + x1) / 2, 4 + sag * 2, x1, 4);
+        ctx.stroke();
+        const count = Math.max(2, Math.floor((x1 - x0) / (flag * 1.6)));
+        for (let i = 0; i < count; i++) {
+          const t = (i + 0.5) / count;
+          const x = lerp(x0, x1, t);
+          const y = 4 + 2 * (1 - t) * t * sag * 2;
+          ctx.fillStyle = COLORS[(i + (x0 ? 3 : 0)) % COLORS.length];
+          ctx.beginPath();
+          ctx.moveTo(x - flag / 2, y);
+          ctx.lineTo(x + flag / 2, y);
+          ctx.lineTo(x, y + flag * 1.1);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawScene() {
+      ctx.fillStyle = wall;
+      ctx.fillRect(0, 0, W, H);
+      drawBunting();
+
+      // Wooden floor.
+      ctx.fillStyle = "#e8b878";
+      ctx.fillRect(0, L.floorY, W, H - L.floorY);
+      ctx.strokeStyle = "#d6a262";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let y = L.floorY + 22; y < H; y += 26) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#cf9a5a";
+      ctx.fillRect(0, L.floorY - 6, W, 6); // skirting board
+    }
+
+    function drawBox() {
+      const b = L.box;
+      const lift = phase === "finale" ? easeOutBack(Math.min(1, finaleT / 0.4)) * b.lid * 2.5 : 0;
+      const r = Math.min(b.w, b.h) * 0.06;
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
+      ctx.beginPath();
+      ctx.ellipse(b.x + b.w / 2, b.y + b.h, b.w * 0.52, b.h * 0.06, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#c1813f"; // a wooden box, so every shape colour stands out against it
+      ctx.beginPath();
+      roundRect(ctx, b.x, b.y + b.lid * 0.5, b.w, b.h - b.lid * 0.5, r);
+      ctx.fill();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+      ctx.fillRect(b.x + r, b.y + b.h - b.h * 0.06, b.w - 2 * r, b.h * 0.06);
+
+      // The lid pops up at the end to let all the shapes out.
+      ctx.save();
+      ctx.translate(b.x + b.w / 2, b.y - lift);
+      ctx.rotate(lift ? -0.08 : 0);
+      ctx.fillStyle = "#a86a2e";
+      ctx.beginPath();
+      roundRect(ctx, -b.w / 2 - b.lid * 0.4, 0, b.w + b.lid * 0.8, b.lid, b.lid * 0.4);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawHole(h) {
+      const pop = easeOutBack(clamp(h.t / SWAP_TIME, 0, 1));
+      if (pop <= 0) return;
+      const shake = h.poke > 0 ? Math.sin(h.poke * 50) * h.s * 0.08 * (h.poke / 0.4) : 0;
+      ctx.save();
+      ctx.translate(h.x + shake, h.y);
+      ctx.scale(h.s * 1.12 * pop, h.s * 1.12 * pop);
+      ctx.lineJoin = "round";
+      if (h.glow > 0) {
+        shapePath(ctx, h.kind);
+        ctx.lineWidth = 0.14 + Math.sin(time * 10) * 0.04;
+        ctx.strokeStyle = `rgba(255, 214, 77, ${Math.min(1, h.glow * 2)})`;
+        ctx.stroke();
+      }
+      shapePath(ctx, h.kind);
+      ctx.fillStyle = "#2d2346";
+      ctx.fill();
+      ctx.lineWidth = 0.05;
+      ctx.strokeStyle = h.flash > 0 ? "#fff" : "rgba(255, 255, 255, 0.45)";
+      ctx.stroke();
+      ctx.restore();
+      drawSign(h, shake);
+    }
+
+    // A round number sign under each hole, like Peekaboo Farm's.
+    function drawSign(h, shake) {
+      const r = h.signR;
+      const x = h.x + shake, y = h.signY;
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = h.glow > 0 ? "#ffb627" : "#3a2e5c";
+      ctx.lineWidth = r * 0.16;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = `600 ${r * 1.4}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(h.label, x, y + r * 0.08);
+    }
+
+    function draw() {
+      drawScene();
+      drawBox();
+      for (const h of holes) drawHole(h);
+
+      if (shape && shape.t >= 0) {
+        const p = shapePos();
+        const wobble = shape.spin > 0 ? Math.sin(shape.spin * 25) * 0.35 * (shape.spin / 0.5) : 0;
+        const tilt = shape.state === "wait" ? Math.sin(shape.t * 2) * 0.06 : 0;
+        drawShape(shape.kind, shape.paint.color, p.x, p.y, p.size, wobble + tilt);
+      }
+
+      for (const f of flyers) if (f.delay <= 0) drawShape(f.kind, f.paint.color, f.x, f.y, f.size, f.rot);
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      sorted = [];
+      flyers = [];
+      nextIn = 0;
+      nextShape(0.4);
+      say("Where does it go?");
+      timer.start();
+    }
+
+    function holeAt(x, y) {
+      return holes.find((h) => x >= h.cell.x && x < h.cell.x + h.cell.w && y >= h.cell.y && y < h.cell.y + h.cell.h);
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const h = holes.find((x) => String(x.label) === e.key);
+      if (h) post(h);
+      else pokeShape();
+    });
+
+    // Tap a hole to post the shape into it, or tap the shape to hear its name.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const h = holeAt(e.clientX, e.clientY);
+      if (h) { post(h); return; }
+      if (shape && shape.t >= 0) {
+        const p = shapePos();
+        if (Math.hypot(e.clientX - p.x, e.clientY - p.y) < p.size * 0.6) pokeShape();
+      }
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: the lid pops off and every shape sorted this round bursts out.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      const b = L.box;
+      const out = sorted.slice(-FINALE_SHAPES);
+      if (shape && shape.state !== "plop") out.push({ kind: shape.kind, paint: shape.paint });
+      if (shape && shape.state !== "plop") shape = null;
+      while (out.length < 6) out.push({ kind: pick(SHAPES).kind, paint: pick(PAINTS) });
+      flyers = shuffle(out).map((f, i) => ({
+        ...f,
+        x: b.x + b.w / 2 + rand(-0.3, 0.3) * b.w, y: b.y,
+        vx: rand(-0.35, 0.35) * W, vy: -rand(1.0, 1.4) * H,
+        rot: 0, vr: rand(-4, 4), size: L.s * rand(0.7, 1), delay: 0.35 + i * 0.12,
+      }));
+      say("Pop! Out they come!");
+    };
+
+    setSound(soundOn);
+    setHoles(SHAPES.slice(0, FEW_HOLES));
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

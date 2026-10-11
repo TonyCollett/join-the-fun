@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Alphabet Zoo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #2ec4b6; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="zoo"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Alphabet Zoo</h1>
+    <p>Press any key to play! 🦁</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    // One animal per letter. Emoji are all from Unicode 10 or earlier so they show up on
+    // older tablets too (no jellyfish or narwhal emoji there, so J and N get stand-ins).
+    const ANIMALS = [
+      { emoji: "🐊", name: "Alligator" },
+      { emoji: "🐻", name: "Bear" },
+      { emoji: "🐱", name: "Cat" },
+      { emoji: "🐶", name: "Dog" },
+      { emoji: "🐘", name: "Elephant" },
+      { emoji: "🐸", name: "Frog" },
+      { emoji: "🦒", name: "Giraffe" },
+      { emoji: "🐴", name: "Horse" },
+      { emoji: "🦎", name: "Iguana" },
+      { emoji: "🐆", name: "Jaguar" },
+      { emoji: "🐨", name: "Koala" },
+      { emoji: "🦁", name: "Lion" },
+      { emoji: "🐵", name: "Monkey" },
+      { emoji: "🐐", name: "Nanny goat" },
+      { emoji: "🦉", name: "Owl" },
+      { emoji: "🐷", name: "Pig" },
+      { emoji: "🐝", name: "Queen bee" },
+      { emoji: "🐰", name: "Rabbit" },
+      { emoji: "🐍", name: "Snake" },
+      { emoji: "🐯", name: "Tiger" },
+      { emoji: "🦄", name: "Unicorn" },
+      { emoji: "🦅", name: "Vulture" },
+      { emoji: "🐳", name: "Whale" },
+      { emoji: "🐟", name: "X-ray fish", plural: "X-ray fish" },
+      { emoji: "🐃", name: "Yak" },
+      { emoji: "🦓", name: "Zebra" },
+    ].map((a, i) => ({ ...a, letter: String.fromCharCode(65 + i), color: COLORS[i % COLORS.length] }));
+    const WORDS = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+    const POP_TIME = 0.5;      // seconds for an animal to pop out of the gate
+    const SHOW_TIME = 3.2;     // seconds it stays at the gate before hopping out to play
+    const HOP_TIME = 0.9;      // seconds to hop from the gate onto the grass
+    const COUNT_STAGGER = 0.15; // seconds between each animal when counting
+    const MAX_WANDERERS = 8;   // animals playing on the grass at once; the oldest wanders off
+    const IDLE_WIGGLE = 8;     // seconds without a key press before the gate rattles
+
+    const canvas = document.getElementById("zoo");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [];
+    let L = {}; // layout: the gate, the big letter, the grass the animals play on
+    let show = null;  // who's at the gate right now
+    let sign = null;  // the big letter (or number) and the animal's name, until the next key
+    let gateOpen = 0, gateRattle = 0, idleT = 0;
+    let wanderers = [], particles = [];
+    let bag = [];     // shuffled animals for taps, so every letter comes up before any repeat
+    let met = new Set();
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, restartAt = 0, finaleT = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("alphabetZooSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+
+      // Wide screens put the big letter on the left and the gate on the right;
+      // tall screens stack the letter above the gate.
+      const landscape = W >= H * 1.1;
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      if (landscape) {
+        const gw = Math.min(W * 0.4, H * 0.62);
+        const ls = Math.min(W * 0.17, H * 0.3);
+        L = { gw, gh: gw * 0.85, gx: W * 0.66, gy: H * 0.92, ls, lx: W * 0.25, ly: H * 0.36, ground: H * 0.62 };
+      } else {
+        const gw = Math.min(W * 0.7, H * 0.36);
+        const ls = Math.min(W * 0.32, H * 0.16);
+        L = { gw, gh: gw * 0.85, gx: W / 2, gy: H * 0.95, ls, lx: W / 2, ly: Math.max(H * 0.25, 14 + 2 * R + 10 + ls * 0.5), ground: H * 0.4 };
+      }
+      L.landscape = landscape;
+      // Where animals play once they've hopped out: left of the gate on wide screens,
+      // the strip of grass between the letter and the gate on tall ones.
+      L.ws = clamp(Math.min(W, H) * 0.11, 40, 90); // a playing animal's size
+      const signTop = L.gy - L.gh - L.gw * 0.2;
+      L.wx0 = L.ws * 0.6;
+      L.wx1 = landscape ? L.gx - L.gw * 0.62 - L.ws * 0.5 : W - L.ws * 0.6;
+      L.wy0 = L.ground + L.ws * 0.6;
+      L.wy1 = landscape ? H - L.ws * 0.55 : Math.max(L.wy0, signTop - L.ws * 0.5);
+      for (const w of wanderers) {
+        w.s = L.ws;
+        w.x = clamp(w.x, L.wx0, L.wx1);
+        w.y = clamp(w.y, L.wy0, L.wy1);
+      }
+
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.ground, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.1, L.ground - H * 0.15), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    // The opening inside the gate, where animals pop out.
+    function opening() {
+      const w = L.gw * 0.88, h = L.gh * 0.92;
+      return { x: L.gx - w / 2, y: L.gy - h, w, h };
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // A rattly clank as the gate swings.
+    function gateSound() {
+      const a = audio(); if (!a) return;
+      for (let i = 0; i < 2; i++) {
+        const t = a.currentTime + i * 0.07;
+        const src = a.createBufferSource();
+        const filter = a.createBiquadFilter();
+        const gain = a.createGain();
+        src.buffer = noise;
+        filter.type = "bandpass";
+        filter.frequency.value = rand(1800, 2600);
+        filter.Q.value = 8;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+        src.connect(filter).connect(gain).connect(master);
+        src.start(t, rand(0, 1.5));
+        src.stop(t + 0.1);
+      }
+    }
+
+    function popSound() {
+      tone(300, 0, 0.22, 0.2, "sine", 900);   // slide whistle up
+      tone(783.99, 0.18, 0.18, 0.15, "triangle");
+      tone(1046.5, 0.3, 0.35, 0.15, "triangle");
+    }
+
+    function hopSound() {
+      tone(400, 0, 0.12, 0.12, "sine", 800);
+      tone(500, 0.15, 0.12, 0.1, "sine", 1000);
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("alphabetZooSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    // The animal at the gate goes off to play on the grass (counting animals just pop away).
+    function sendOff() {
+      if (!show) return;
+      if (show.kind === "letter") {
+        const p = gateAnimal(show);
+        // Keep the grass from getting crowded: the oldest player wanders off.
+        const staying = wanderers.filter((w) => w.state !== "leave");
+        for (const w of staying.slice(0, Math.max(0, staying.length + 1 - MAX_WANDERERS))) {
+          w.state = "leave";
+          w.dir = w.x < W / 2 ? -1 : 1;
+        }
+        const toX = rand(L.wx0, L.wx1);
+        wanderers.push({
+          animal: show.animal, state: "hop", t: 0, s: L.ws, jump: 0,
+          fromX: p.x, fromY: p.y, fromS: p.e,
+          x: toX, y: rand(L.wy0, L.wy1),
+          dir: toX > p.x ? 1 : -1, speed: rand(30, 60), turnIn: rand(2, 5),
+        });
+        hopSound();
+      }
+      show = null;
+    }
+
+    function letterShow(animal) {
+      if (show && show.kind === "letter" && show.animal === animal) {
+        // Same letter again: the animal stays out a bit longer and does a little jump.
+        show.t = Math.min(show.t, POP_TIME);
+        show.bump = 0.4;
+      } else {
+        sendOff();
+        show = { kind: "letter", animal, t: 0, bump: 0, end: SHOW_TIME };
+        if (gateOpen < 0.5) gateSound();
+        popSound();
+      }
+      met.add(animal);
+      sign = { text: animal.letter + animal.letter.toLowerCase(), name: animal.name, color: animal.color, t: 0 };
+      say(`${animal.letter}! ${animal.letter} is for ${animal.name}!`);
+      sparkle(L.gx, L.gy - L.gh * 0.5, L.gw * 0.25);
+    }
+
+    // Number keys bring out that many of one animal (0 means ten).
+    function countShow(n) {
+      sendOff();
+      const animal = pick(ANIMALS);
+      show = { kind: "count", animal, n, t: 0, bump: 0, end: SHOW_TIME + n * COUNT_STAGGER };
+      met.add(animal);
+      if (gateOpen < 0.5) gateSound();
+      for (let i = 0; i < n; i++) tone(700 + i * 70, 0.1 + i * COUNT_STAGGER, 0.1, 0.12, "triangle");
+      const plural = animal.plural || `${animal.name}s`;
+      sign = { text: String(n), name: `${n} ${n === 1 ? animal.name : plural}`, color: pick(COLORS), t: 0 };
+      say(`${WORDS[n - 1]} ${n === 1 ? animal.name : plural}!`);
+    }
+
+    // Taps pull animals out of a shuffled bag, so they all get a turn.
+    function tapShow() {
+      if (!bag.length) {
+        bag = [...ANIMALS].sort(() => Math.random() - 0.5);
+        if (show && bag[bag.length - 1] === show.animal) bag.unshift(bag.pop());
+      }
+      letterShow(bag.pop());
+    }
+
+    // Where the animal(s) at the gate are: popping up from the bottom of the opening.
+    function gateAnimal(s, i = 0) {
+      const o = opening();
+      if (s.kind === "letter") {
+        const e = Math.min(o.w, o.h) * 0.78;
+        const pop = easeOutBack(clamp(s.t / POP_TIME, 0, 1));
+        const bob = s.t > POP_TIME ? Math.sin((s.t - POP_TIME) * 5) * e * 0.03 : 0;
+        const from = o.y + o.h - e * 0.15, to = o.y + o.h * 0.5;
+        return { x: L.gx, y: from + (to - from) * pop + bob, e: e * (0.25 + 0.75 * clamp(pop, 0, 1.2)) };
+      }
+      // Counting: up to five in a row, a second row for six or more.
+      const cols = s.n <= 5 ? s.n : Math.ceil(s.n / 2);
+      const rows = s.n <= 5 ? 1 : 2;
+      const cell = Math.min(o.w * 0.92 / cols, o.h / rows * 0.8);
+      const col = i % cols, row = Math.floor(i / cols);
+      const rowCount = row === rows - 1 ? s.n - cols * (rows - 1) : cols;
+      const pop = easeOutBack(clamp((s.t - i * COUNT_STAGGER) / 0.35, 0, 1));
+      const shrink = clamp((s.t - s.end) / 0.3, 0, 1);
+      const cy = o.y + o.h * (rows === 1 ? 0.55 : 0.32 + row * 0.42);
+      return {
+        x: L.gx + (col - (rowCount - 1) / 2) * cell,
+        y: cy + (1 - pop) * cell * 0.4 - Math.abs(Math.sin(s.t * 6 + i)) * cell * 0.05,
+        e: cell * 0.82 * pop * (1 - shrink),
+      };
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      if (show) {
+        show.t += dt;
+        show.bump = Math.max(0, show.bump - dt);
+        if (show.kind === "letter" && show.t >= show.end) sendOff();
+        else if (show.kind === "count" && show.t >= show.end + 0.3) show = null;
+      }
+      const wasOpen = gateOpen > 0.5;
+      gateOpen += ((show ? 1 : 0) - gateOpen) * Math.min(1, dt * 10);
+      if (wasOpen && gateOpen <= 0.5) gateSound();
+      if (sign) sign.t += dt;
+
+      // Rattle the gate now and then if nobody's pressed anything for a while.
+      gateRattle = Math.max(0, gateRattle - dt);
+      if (phase === "playing" && !show) {
+        idleT += dt;
+        if (idleT > IDLE_WIGGLE) { idleT = 0; gateRattle = 0.6; gateSound(); }
+      }
+
+      for (const w of wanderers) {
+        w.t += dt;
+        w.jump = Math.max(0, w.jump - dt);
+        if (w.state === "hop" && w.t >= HOP_TIME) { w.state = "walk"; w.t = 0; }
+        else if (w.state === "walk") {
+          w.x += w.dir * w.speed * dt;
+          w.turnIn -= dt;
+          if (w.turnIn <= 0) { w.turnIn = rand(2, 5); w.dir = pick([-1, 1]); w.speed = rand(30, 60); }
+          if (w.x < L.wx0) w.dir = 1;
+          if (w.x > L.wx1) w.dir = -1;
+          if (phase === "finale" && w.jump <= 0) w.jump = 0.5; // everybody jumps to say goodbye
+        } else if (w.state === "leave") {
+          w.x += w.dir * 220 * dt;
+        }
+      }
+      wanderers = wanderers.filter((w) => w.state !== "leave" || (w.x > -w.s && w.x < W + w.s));
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.5) finishRound(`You met ${met.size} animal${met.size === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      for (const [x, y, r] of list) {
+        c.beginPath();
+        c.arc(x, y, r, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      circles(ctx, "#ffd84d", [[W - 100, Math.min(130, L.ground * 0.4), 42]]);
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Palm trees and hills behind the zoo fence.
+      const g = L.ground;
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.15, g, W * 0.45, H * 0.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, g + H * 0.01, W * 0.5, H * 0.09, 0, 0, Math.PI * 2);
+      ctx.fill();
+      for (const [x, h] of [[W * 0.06, 0.16], [W * 0.94, 0.2]]) drawPalm(x, g, H * h);
+
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, g, W, H);
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+
+      // A low wooden fence along the back of the grass.
+      const fh = clamp(H * 0.05, 18, 40);
+      ctx.fillStyle = "#c98b52";
+      ctx.fillRect(0, g - fh * 0.75, W, fh * 0.16);
+      ctx.fillRect(0, g - fh * 0.35, W, fh * 0.16);
+      ctx.fillStyle = "#b07440";
+      for (let x = 10; x < W; x += fh * 1.4) ctx.fillRect(x, g - fh, fh * 0.22, fh);
+    }
+
+    function drawPalm(x, y, h) {
+      ctx.strokeStyle = "#a0703f";
+      ctx.lineWidth = h * 0.08;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.quadraticCurveTo(x + h * 0.15, y - h * 0.5, x, y - h);
+      ctx.stroke();
+      ctx.fillStyle = "#3f9e4a";
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI / 2 + (i - 2) * 0.6 + Math.sin(time * 1.5 + i) * 0.04;
+        ctx.save();
+        ctx.translate(x, y - h);
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.ellipse(h * 0.25, 0, h * 0.28, h * 0.07, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawEmoji(emoji, x, y, size, flip = false, rot = 0) {
+      if (size <= 0.5) return;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      if (flip) ctx.scale(-1, 1);
+      ctx.font = `${size}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(emoji, 0, 0);
+      ctx.restore();
+    }
+
+    // The zoo gate: stone posts, an arch sign, and two barred doors that swing open.
+    function drawGate() {
+      const { gx, gy, gw, gh } = L;
+      const o = opening();
+      const shake = gateRattle > 0 ? Math.sin(gateRattle * 50) * gw * 0.006 : 0;
+
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.ellipse(gx, gy, gw * 0.62, gw * 0.05, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Inside the enclosure: sunny sand with a bush.
+      ctx.fillStyle = "#cdeaa0";
+      ctx.fillRect(o.x, o.y, o.w, o.h);
+      ctx.fillStyle = "#f3dc9a";
+      ctx.fillRect(o.x, o.y + o.h * 0.7, o.w, o.h * 0.3);
+      circles(ctx, "#8fcf7a", [[o.x + o.w * 0.15, o.y + o.h * 0.7, o.w * 0.12], [o.x + o.w * 0.27, o.y + o.h * 0.72, o.w * 0.09]]);
+
+      // Doors hinge at the posts and fold back as they open.
+      const doorW = (o.w / 2) * (1 - 0.82 * gateOpen);
+      for (const side of [-1, 1]) {
+        const hinge = gx + side * o.w / 2;
+        const bars = Math.max(2, Math.round(5 * (1 - 0.82 * gateOpen)) + 1);
+        for (let b = 0; b < bars; b++) {
+          const x = hinge - side * (doorW * b / (bars - 1)) + shake;
+          ctx.fillStyle = "#2f7d4f";
+          ctx.fillRect(x - gw * 0.012, o.y + o.h * 0.08, gw * 0.024, o.h * 0.92);
+          circles(ctx, "#ffb627", [[x, o.y + o.h * 0.08, gw * 0.02]]);
+        }
+        ctx.fillStyle = "#2f7d4f";
+        ctx.fillRect(Math.min(hinge, hinge - side * doorW) + shake, o.y + o.h * 0.2, doorW, gw * 0.025);
+        ctx.fillRect(Math.min(hinge, hinge - side * doorW) + shake, o.y + o.h * 0.85, doorW, gw * 0.025);
+      }
+
+      // Animals at the gate pop out in front of the open doors.
+      if (show) {
+        if (show.kind === "letter") {
+          const p = gateAnimal(show);
+          const rot = show.bump > 0 ? Math.sin(show.bump * 30) * 0.15 : Math.sin(show.t * 3) * 0.05;
+          drawEmoji(show.animal.emoji, p.x, p.y, p.e, false, rot);
+        } else {
+          for (let i = 0; i < show.n; i++) {
+            const p = gateAnimal(show, i);
+            drawEmoji(show.animal.emoji, p.x, p.y, p.e);
+          }
+        }
+      }
+
+      // Stone posts with round caps.
+      const pw = gw * 0.12;
+      for (const side of [-1, 1]) {
+        const x = gx + side * (o.w / 2 + pw / 2);
+        ctx.fillStyle = "#c9b8a6";
+        ctx.fillRect(x - pw / 2, gy - gh, pw, gh);
+        ctx.fillStyle = "#b3a08c";
+        for (let r = 0; r < 5; r++) ctx.fillRect(x - pw / 2, gy - gh + (gh / 5) * r, pw, gh * 0.012);
+        circles(ctx, "#ff5d73", [[x, gy - gh - pw * 0.25, pw * 0.42]]);
+      }
+
+      // The arch sign across the top.
+      const sw = o.w * 0.8, sh = gw * 0.17;
+      const sy = gy - gh - sh * 0.65;
+      ctx.fillStyle = "#ffb627";
+      roundRect(gx - sw / 2, sy - sh / 2, sw, sh, sh * 0.4);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = sh * 0.08;
+      ctx.stroke();
+      ctx.font = `600 ${sh * 0.62}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText("ZOO", gx, sy + sh * 0.04);
+      drawEmoji("🐾", gx - sw * 0.33, sy, sh * 0.5);
+      drawEmoji("🐾", gx + sw * 0.33, sy, sh * 0.5);
+    }
+
+    // The big letter (upper and lower case) with the animal's name under it.
+    function drawSign() {
+      if (!sign) return;
+      const pop = easeOutBack(Math.min(1, sign.t / 0.45));
+      const size = L.ls;
+      ctx.save();
+      ctx.translate(L.lx, L.ly + Math.sin(time * 2) * size * 0.02);
+      ctx.scale(pop, pop);
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.14;
+      ctx.strokeStyle = "#fff";
+      ctx.strokeText(sign.text, 0, 0);
+      ctx.fillStyle = sign.color;
+      ctx.fillText(sign.text, 0, 0);
+
+      // The name, with its first letter in the same colour as the big letter.
+      const ns = size * 0.32;
+      ctx.font = `600 ${ns}px ${FONT}`;
+      ctx.lineWidth = ns * 0.25;
+      ctx.textAlign = "left";
+      const first = sign.name[0];
+      const rest = sign.name.slice(1);
+      const total = ctx.measureText(sign.name).width;
+      const scale = Math.min(1, (L.landscape ? W * 0.4 : W - 32) / total);
+      ctx.scale(scale, scale);
+      let x = -total / 2;
+      const y = size * 0.72;
+      ctx.strokeText(sign.name, x, y);
+      ctx.fillStyle = sign.color;
+      ctx.fillText(first, x, y);
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(rest, x + ctx.measureText(first).width, y);
+      ctx.restore();
+    }
+
+    function drawWanderer(w) {
+      let x = w.x, y = w.y, s = w.s;
+      if (w.state === "hop") {
+        // A big arc from the gate down onto the grass, shrinking to playing size.
+        const k = clamp(w.t / HOP_TIME, 0, 1);
+        const e = k * (2 - k);
+        x = w.fromX + (w.x - w.fromX) * e;
+        y = w.fromY + (w.y - w.fromY) * e - Math.sin(k * Math.PI) * L.gh * 0.35;
+        s = w.fromS + (w.s - w.fromS) * e;
+      } else {
+        y -= Math.abs(Math.sin(w.t * 7)) * s * 0.08; // happy hops
+        if (w.jump > 0) y -= Math.sin((w.jump / 0.5) * Math.PI) * s * 0.6;
+      }
+      if (w.state !== "hop") {
+        ctx.fillStyle = "rgba(0,0,0,0.12)";
+        ctx.beginPath();
+        ctx.ellipse(x, w.y + s * 0.45, s * 0.35, s * 0.08, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Most animal emoji face left, so flip the ones walking right.
+      drawEmoji(w.animal.emoji, x, y, s, w.dir > 0, Math.sin(w.t * 7) * 0.06);
+    }
+
+    function draw() {
+      drawScene();
+      drawGate();
+      // Back ones first so nearer animals overlap; hoppers fly over everyone.
+      const walking = wanderers.filter((w) => w.state !== "hop").sort((a, b) => a.y - b.y);
+      for (const w of walking) drawWanderer(w);
+      for (const w of wanderers) if (w.state === "hop") drawWanderer(w);
+      drawSign();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      met = new Set();
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      show = null;
+      sign = null;
+      wanderers = [];
+      bag = [];
+      idleT = 0;
+      gateRattle = 0.6;
+      gateSound();
+      say("Welcome to the zoo! Press a letter!");
+      timer.start();
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      idleT = 0;
+      if (/^[a-z]$/i.test(e.key)) letterShow(ANIMALS[e.key.toUpperCase().charCodeAt(0) - 65]);
+      else if (/^[0-9]$/.test(e.key)) countShow(Number(e.key) || 10);
+      else { gateRattle = 0.4; boop(); }
+    });
+
+    // Tap an animal on the grass to hear its name; tap anywhere else for a new animal.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      idleT = 0;
+      const w = wanderers.find((w) => w.state === "walk" && Math.hypot(e.clientX - w.x, e.clientY - w.y) < w.s * 0.6);
+      if (w) {
+        w.jump = 0.5;
+        hopSound();
+        say(`${w.animal.name}!`);
+        return;
+      }
+      tapShow();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: everyone on the grass jumps up and down to say goodbye.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      sendOff();
+      for (const w of wanderers) sparkle(w.x, w.y, w.s * 0.4);
+      popSound();
+      say("Bye bye, animals!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

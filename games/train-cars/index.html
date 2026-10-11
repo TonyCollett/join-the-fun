@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Train Cars</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #5b8def; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="railway"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Train Cars</h1>
+    <p>Press any key to play! 🚂</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const WORDS = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+    const CARGO = ["🧸", "🎈", "🍎", "🐶", "⚽", "🍌", "🐱", "🎁", "🦆", "🍩", "🐰", "🌻", "🐸", "🍓", "🐷", "🍉"];
+    const DRIVER = "🐻";
+    const TRAIN_SIZE = 5;    // carriages before the train toots and chugs away
+    // Train sizes in units of a carriage's length.
+    const ENGINE_LEN = 1.5;
+    const CAR_LEN = 1;
+    const GAP = 0.1;         // coupling between carriages
+    const TRAIN_LEN = ENGINE_LEN + TRAIN_SIZE * (CAR_LEN + GAP);
+    const ADD_GAP = 0.5;     // seconds between carriages, so each number can be heard
+    const FULL_DELAY = 1.3;  // pause after the last carriage so "Five!" can be heard
+    const TOOT_TIME = 1.4;   // seconds of tooting and puffing before setting off
+    const POP_LIFE = 1.4;    // seconds a carriage's big number floats above it
+
+    const canvas = document.getElementById("railway");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [], bushes = [];
+    let L = {}; // layout: carriage size, track line, where the engine stops
+    let engine = { x: 0, state: "wait", t: 0, v: 0, wheel: 0, chuff: 0 }; // arrive -> wait -> full -> toot -> depart
+    let cars = [], puffs = [], particles = [], pops = [];
+    let count = 0, lastAdd = -9, lastFun = 0;
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("trainCarsSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+
+      const landscape = W >= H * 1.1;
+      // A full train (engine + five carriages) always fits across the screen.
+      const u = Math.max(28, Math.min((W - 24) / TRAIN_LEN, H * (landscape ? 0.2 : 0.14)));
+      const track = H * (landscape ? 0.74 : 0.62);
+      const clockR = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const dot = clamp(Math.min(W, H) * 0.05, 18, 34);
+      L = {
+        u, track, dot,
+        stopX: (W - TRAIN_LEN * u) / 2, // the engine's nose when it's waiting
+        dotY: 14 + 2 * clockR + 14 + dot, // the five-dot counter, just under the clock
+        horizon: track - Math.max(H * 0.16, u * 1.2),
+      };
+      if (engine.state === "wait") engine.x = L.stopX;
+
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.horizon + H * 0.06, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      const nBushes = Math.max(3, Math.round(W / 220));
+      bushes = Array.from({ length: nBushes }, (_, i) => ({
+        x: ((i + rand(0.2, 0.8)) / nBushes) * W, s: rand(0.7, 1.1) * clamp(u * 0.5, 22, 60),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(L.dotY + L.dot + 30, Math.max(L.dotY + L.dot + 40, L.horizon - H * 0.12)), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    // Where carriage `i` (0 = right behind the engine) is hooked on.
+    function carTarget(i) {
+      return engine.x + (ENGINE_LEN + GAP + i * (CAR_LEN + GAP)) * L.u;
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // A breathy chuff of steam.
+    function chuff(vol = 0.3) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const src = a.createBufferSource();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      src.buffer = noise;
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(1400, t);
+      filter.frequency.exponentialRampToValueAtTime(500, t + 0.14);
+      filter.Q.value = 0.8;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      src.connect(filter).connect(gain).connect(master);
+      src.start(t, rand(0, 1.5));
+      src.stop(t + 0.18);
+    }
+
+    // Two-note steam whistle: choo choo!
+    function whistle() {
+      for (const start of [0, 0.5]) {
+        for (const f of [587.33, 739.99, 880]) tone(f, start, 0.4, 0.08, "triangle", f * 0.97);
+      }
+    }
+
+    // Carriage rolling up, then the clunk as it hooks on.
+    function rollSound() {
+      tone(420, 0, 0.14, 0.14, "sine", 840);
+    }
+
+    function clunk() {
+      tone(240, 0, 0.06, 0.12, "square", 120);
+      tone(150, 0.05, 0.09, 0.12, "square", 90);
+    }
+
+    function bell() {
+      tone(1318.5, 0, 0.45, 0.1, "sine");
+      tone(1975.5, 0, 0.25, 0.04, "sine");
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("trainCarsSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    // A fresh engine pulls in from the right and stops to wait for carriages.
+    function newTrain() {
+      count = 0;
+      cars = [];
+      Object.assign(engine, { x: W + L.u * 0.3, state: "arrive", t: 0, v: 0, chuff: 0 });
+    }
+
+    function chimney() {
+      return { x: engine.x + 0.26 * L.u, y: L.track - 1.16 * L.u };
+    }
+
+    function puff(big = false) {
+      const c = chimney();
+      const u = L.u;
+      for (let i = 0; i < (big ? 3 : 1); i++) {
+        puffs.push({
+          x: c.x + rand(-0.05, 0.05) * u, y: c.y, vx: rand(-0.1, 0.25) * u, vy: -rand(0.5, 0.8) * u * (big ? 1.4 : 1),
+          r: u * rand(0.1, 0.14), grow: u * (big ? 0.4 : 0.25), life: rand(1.2, 1.8), age: 0,
+        });
+      }
+    }
+
+    // Every key or tap adds the next carriage while the engine is waiting.
+    // At other times (or too fast to hear the numbers) it still does something fun.
+    function addCar() {
+      if (engine.state !== "wait" || count >= TRAIN_SIZE || time - lastAdd < ADD_GAP) {
+        if (time - lastFun > 0.15) {
+          lastFun = time;
+          puff();
+          if (engine.state === "wait") chuff(0.2);
+          else bell();
+        }
+        return;
+      }
+      lastAdd = time;
+      const n = ++count;
+      if (phase === "playing") score++;
+      const used = new Set(cars.map((c) => c.cargo));
+      let cargo;
+      do { cargo = pick(CARGO); } while (used.has(cargo));
+      const car = { n, cargo, color: COLORS[(n - 1) % COLORS.length], x: W + L.u * 0.2, attached: false, t: 0, wheel: 0, landT: 9 };
+      cars.push(car);
+      pops.push({ car, t: 0 });
+      rollSound();
+      puff();
+      say(`${WORDS[n - 1]}!`);
+      if (n === TRAIN_SIZE) {
+        engine.state = "full";
+        engine.t = 0;
+      }
+    }
+
+    function toot() {
+      engine.state = "toot";
+      engine.t = 0;
+      whistle();
+      puff(true);
+      say("Choo choo!");
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(3, 7), color: pick(COLORS),
+        });
+      }
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function updateEngine(dt) {
+      const u = L.u;
+      const before = engine.x;
+      engine.t += dt;
+      if (engine.state === "arrive") {
+        // Slow down smoothly into the station.
+        const dx = L.stopX - engine.x;
+        engine.x += Math.sign(dx) * Math.min(Math.abs(dx), Math.max(Math.abs(dx) * 2.2, u * 0.6) * dt);
+        if (Math.abs(L.stopX - engine.x) < 1) {
+          engine.x = L.stopX;
+          engine.state = "wait";
+          bell();
+          if (phase === "playing") say("All aboard!");
+        }
+      } else if (engine.state === "wait") {
+        engine.x = L.stopX;
+      } else if (engine.state === "full") {
+        if (engine.t > FULL_DELAY && cars.every((c) => c.attached)) toot();
+      } else if (engine.state === "toot") {
+        if (engine.t > 0.5 && engine.t - dt <= 0.5) puff(true);
+        if (engine.t > TOOT_TIME) {
+          engine.state = "depart";
+          engine.t = 0;
+          engine.v = 0;
+          cheer();
+        }
+      } else if (engine.state === "depart") {
+        engine.v = Math.min(Math.max(W * 0.8, u * 8), engine.v + Math.max(W * 0.35, u * 3.5) * dt);
+        engine.x -= engine.v * dt;
+      }
+
+      // Wheels turn and steam chuffs as the engine rolls along.
+      const moved = Math.abs(engine.x - before);
+      engine.wheel -= moved / (0.2 * u);
+      engine.chuff += moved;
+      if (engine.chuff > u * 0.7) {
+        engine.chuff = 0;
+        chuff();
+        puff();
+      }
+
+      for (const c of cars) {
+        c.t += dt;
+        c.landT += dt;
+        const target = carTarget(c.n - 1);
+        const old = c.x;
+        if (c.attached) c.x = target;
+        else {
+          c.x += (target - c.x) * Math.min(1, dt * 6);
+          if (Math.abs(target - c.x) < 1.5) {
+            c.x = target;
+            c.attached = true;
+            c.landT = 0;
+            clunk();
+            sparkle(c.x - GAP * u * 0.5, L.track - 0.33 * u, u * 0.25);
+          }
+        }
+        c.wheel -= (old - c.x) / (0.14 * u);
+      }
+
+      // Gone off the left edge: a new engine pulls in (or, at the end, we're all done).
+      if (engine.state === "depart") {
+        const tail = Math.max(engine.x + ENGINE_LEN * u, ...cars.map((c) => c.x + CAR_LEN * u));
+        if (tail < -20) {
+          if (phase === "playing") newTrain();
+          else if (phase === "finale") finishRound(`You counted ${score} carriage${score === 1 ? "" : "s"}!`);
+        }
+      }
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      if (phase === "playing" || phase === "finale") updateEngine(dt);
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of pops) p.t += dt;
+      pops = pops.filter((p) => p.t < POP_LIFE);
+
+      for (const p of puffs) {
+        p.age += dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy *= Math.max(0, 1 - 0.8 * dt);
+      }
+      puffs = puffs.filter((p) => p.age < p.life);
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      c.beginPath();
+      for (const [x, y, r] of list) {
+        c.moveTo(x + r, y);
+        c.arc(x, y, r, 0, Math.PI * 2);
+      }
+      c.fill();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function emoji(ch, x, y, size, rot = 0) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.font = `${size}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(ch, 0, 0);
+      ctx.restore();
+    }
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      // On narrow screens the sun drops below the counting dots rather than sitting behind them.
+      let sunY = Math.min(130, L.horizon * 0.45);
+      if (W - 142 < W / 2 + L.dot * 6.5) sunY = Math.max(sunY, L.dotY + L.dot + 56);
+      circles(ctx, "#ffd84d", [[W - 100, sunY, 42]]);
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.25, L.horizon + H * 0.06, W * 0.6, H * 0.14, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, L.horizon + H * 0.08, W * 0.5, H * 0.12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, L.horizon + H * 0.06, W, H);
+
+      for (const b of bushes) {
+        const y = L.track - L.u * 0.25;
+        circles(ctx, "#4caf50", [[b.x - b.s * 0.5, y, b.s * 0.55], [b.x + b.s * 0.5, y, b.s * 0.55], [b.x, y - b.s * 0.35, b.s * 0.7]]);
+      }
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+
+      // Gravel bed, wooden sleepers, and a shiny rail.
+      const u = L.u, y = L.track;
+      ctx.fillStyle = "#c9b79c";
+      ctx.fillRect(0, y + u * 0.02, W, u * 0.14);
+      ctx.fillStyle = "#8b5a2b";
+      const step = u * 0.36;
+      for (let x = step * 0.3; x < W; x += step) ctx.fillRect(x, y + u * 0.02, u * 0.16, u * 0.11);
+      ctx.fillStyle = "#7d7a8c";
+      ctx.fillRect(0, y - u * 0.01, W, u * 0.05);
+      ctx.fillStyle = "#b9b4c9";
+      ctx.fillRect(0, y - u * 0.01, W, u * 0.015);
+    }
+
+    function wheel(x, y, r, angle, color) {
+      circles(ctx, "#3a2e5c", [[x, y, r]]);
+      circles(ctx, color, [[x, y, r * 0.72]]);
+      ctx.strokeStyle = "#3a2e5c";
+      ctx.lineWidth = r * 0.14;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = angle + (i * Math.PI) / 3;
+        ctx.moveTo(x - Math.cos(a) * r * 0.7, y - Math.sin(a) * r * 0.7);
+        ctx.lineTo(x + Math.cos(a) * r * 0.7, y + Math.sin(a) * r * 0.7);
+      }
+      ctx.stroke();
+      circles(ctx, "#fff", [[x, y, r * 0.18]]);
+    }
+
+    // The engine faces left; x is the tip of its nose, and it sits on the rail.
+    function drawEngine() {
+      const u = L.u, y = L.track, x = engine.x;
+      const X = (k) => x + k * u, Y = (k) => y + k * u;
+      // A little bounce while it chugs along.
+      const moving = engine.state === "arrive" || engine.state === "depart";
+      const bob = moving ? Math.abs(Math.sin(time * 16)) * u * 0.015 : 0;
+
+      ctx.save();
+      ctx.translate(0, -bob);
+      // Cowcatcher
+      ctx.fillStyle = "#ffb627";
+      ctx.beginPath();
+      ctx.moveTo(X(-0.06), Y(-0.02));
+      ctx.lineTo(X(0.16), Y(-0.02));
+      ctx.lineTo(X(0.16), Y(-0.32));
+      ctx.closePath();
+      ctx.fill();
+      // Chassis
+      ctx.fillStyle = "#3a2e5c";
+      roundRect(X(0.06), Y(-0.36), 1.42 * u, 0.12 * u, 0.04 * u);
+      ctx.fill();
+      // Boiler with golden bands and a dark front cap
+      ctx.fillStyle = "#5b8def";
+      roundRect(X(0.1), Y(-0.82), 0.92 * u, 0.48 * u, 0.12 * u);
+      ctx.fill();
+      ctx.fillStyle = "#ffb627";
+      ctx.fillRect(X(0.36), Y(-0.82), 0.07 * u, 0.48 * u);
+      ctx.fillRect(X(0.66), Y(-0.82), 0.07 * u, 0.48 * u);
+      ctx.fillStyle = "#3a2e5c";
+      roundRect(X(0.04), Y(-0.78), 0.1 * u, 0.4 * u, 0.04 * u);
+      ctx.fill();
+      circles(ctx, "#ffe066", [[X(0.12), Y(-0.88), 0.07 * u]]); // headlamp
+      // Chimney with a flared top
+      ctx.fillStyle = "#3a2e5c";
+      ctx.beginPath();
+      ctx.moveTo(X(0.19), Y(-0.8));
+      ctx.lineTo(X(0.19), Y(-1.0));
+      ctx.lineTo(X(0.12), Y(-1.14));
+      ctx.lineTo(X(0.4), Y(-1.14));
+      ctx.lineTo(X(0.33), Y(-1.0));
+      ctx.lineTo(X(0.33), Y(-0.8));
+      ctx.closePath();
+      ctx.fill();
+      // Steam dome
+      ctx.fillStyle = "#ffb627";
+      ctx.beginPath();
+      ctx.arc(X(0.86), Y(-0.8), 0.11 * u, Math.PI, 0);
+      ctx.fill();
+      // Cab, roof and window, with a bear driving
+      ctx.fillStyle = "#ff5d73";
+      roundRect(X(1.0), Y(-1.1), 0.5 * u, 0.78 * u, 0.06 * u);
+      ctx.fill();
+      ctx.fillStyle = "#e6f7ff";
+      roundRect(X(1.08), Y(-1.0), 0.32 * u, 0.3 * u, 0.06 * u);
+      ctx.fill();
+      emoji(DRIVER, X(1.24), Y(-0.86), 0.26 * u);
+      ctx.fillStyle = "#3a2e5c";
+      roundRect(X(0.94), Y(-1.2), 0.62 * u, 0.11 * u, 0.05 * u);
+      ctx.fill();
+      // Wheels and the rod joining the big ones
+      const a = engine.wheel;
+      wheel(X(0.34), Y(-0.13), 0.13 * u, a * 1.5, "#ff5d73");
+      wheel(X(0.8), Y(-0.2), 0.2 * u, a, "#ff5d73");
+      wheel(X(1.24), Y(-0.2), 0.2 * u, a, "#ff5d73");
+      ctx.strokeStyle = "#d9d4e8";
+      ctx.lineWidth = 0.045 * u;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(X(0.8) + Math.cos(a) * 0.1 * u, Y(-0.2) + Math.sin(a) * 0.1 * u);
+      ctx.lineTo(X(1.24) + Math.cos(a) * 0.1 * u, Y(-0.2) + Math.sin(a) * 0.1 * u);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // An open wagon with its cargo peeking out and its number on the side.
+    function drawCar(c) {
+      const u = L.u, y = L.track, x = c.x;
+      const X = (k) => x + k * u, Y = (k) => y + k * u;
+      // Coupling to the carriage (or engine) in front
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillRect(X(-GAP - 0.02), Y(-0.37), (GAP + 0.08) * u, 0.07 * u);
+
+      const hop = c.landT < 0.35 ? Math.sin((c.landT / 0.35) * Math.PI) * u * 0.1 : 0;
+      emoji(c.cargo, X(0.5), Y(-0.86) - hop, 0.56 * u, Math.sin(time * 2 + c.n) * 0.08);
+
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillRect(X(0.08), Y(-0.32), 0.84 * u, 0.07 * u);
+      ctx.fillStyle = c.color;
+      roundRect(X(0.03), Y(-0.8), 0.94 * u, 0.5 * u, 0.08 * u);
+      ctx.fill();
+      ctx.fillStyle = "rgba(58, 46, 92, 0.3)";
+      roundRect(X(0), Y(-0.84), 1.0 * u, 0.1 * u, 0.05 * u);
+      ctx.fill();
+
+      circles(ctx, "#fff", [[X(0.5), Y(-0.54), 0.19 * u]]);
+      ctx.font = `600 ${0.3 * u}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(c.n, X(0.5), Y(-0.525));
+
+      wheel(X(0.25), Y(-0.14), 0.14 * u, c.wheel, "#ffe066");
+      wheel(X(0.75), Y(-0.14), 0.14 * u, c.wheel, "#ffe066");
+    }
+
+    // Each new carriage's number pops up big above it, then floats off.
+    function drawPop(p) {
+      const size = clamp(Math.min(W, H) * 0.13, 48, 110);
+      const k = p.t / POP_LIFE;
+      const scale = easeOutBack(Math.min(1, p.t / 0.35));
+      const alpha = 1 - clamp((k - 0.65) / 0.35, 0, 1);
+      const x = p.car.x + 0.5 * L.u;
+      const y = L.track - 1.2 * L.u - size * 0.5 - k * size * 0.25;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.18;
+      ctx.strokeStyle = "#fff";
+      ctx.strokeText(p.car.n, 0, 0);
+      ctx.fillStyle = p.car.color;
+      ctx.fillText(p.car.n, 0, 0);
+      ctx.restore();
+    }
+
+    // Five dots under the clock fill up with each carriage, so you can see when the train is full.
+    function drawDots() {
+      const r = L.dot;
+      for (let i = 0; i < TRAIN_SIZE; i++) {
+        const x = W / 2 + (i - (TRAIN_SIZE - 1) / 2) * r * 2.5;
+        const car = cars[i];
+        const filled = car && car.attached;
+        const next = i === count && engine.state === "wait";
+        const s = filled && car.landT < 0.3 ? 1 + 0.3 * Math.sin((car.landT / 0.3) * Math.PI) : next ? 1 + Math.sin(time * 5) * 0.06 : 1;
+        ctx.fillStyle = filled ? car.color : "rgba(255, 255, 255, 0.85)";
+        ctx.strokeStyle = filled ? "#fff" : "rgba(58, 46, 92, 0.25)";
+        ctx.lineWidth = r * 0.14;
+        ctx.beginPath();
+        ctx.arc(x, L.dotY, r * s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = `600 ${r * 1.15 * s}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = filled ? "#fff" : "#b9b4c9";
+        ctx.fillText(i + 1, x, L.dotY + r * 0.08);
+      }
+    }
+
+    function draw() {
+      drawScene();
+      // Back to front: last carriage first so couplings tuck under the one ahead.
+      for (let i = cars.length - 1; i >= 0; i--) drawCar(cars[i]);
+      drawEngine();
+
+      for (const p of puffs) {
+        const k = p.age / p.life;
+        ctx.globalAlpha = 0.85 * (1 - k);
+        circles(ctx, "#fff", [[p.x, p.y, p.r + p.grow * k]]);
+      }
+      ctx.globalAlpha = 1;
+
+      for (const p of pops) drawPop(p);
+      if (phase !== "title") drawDots();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      pops = [];
+      lastAdd = -9;
+      newTrain();
+      chuff();
+      timer.start();
+    }
+
+    // Any key at all adds a carriage, so mashing is half the fun.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      addCar();
+    });
+
+    canvas.addEventListener("pointerdown", () => {
+      if (phase !== "playing") { start(); return; }
+      addCar();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: whatever's on the train toots goodbye and chugs away.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      if (engine.state !== "toot" && engine.state !== "depart") {
+        toot();
+        say("Choo choo! Bye bye!");
+      }
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    // A waiting engine to look at behind the title screen.
+    engine.x = L.stopX;
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

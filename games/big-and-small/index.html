@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Big &amp; Small</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff5d73; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="meadow"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Big &amp; Small</h1>
+    <p>Press any key to play! 🐘</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const THINGS = [
+      { emoji: "🐘", name: "elephant" },
+      { emoji: "🦒", name: "giraffe" },
+      { emoji: "🐢", name: "turtle" },
+      { emoji: "🦆", name: "duck" },
+      { emoji: "🐈", name: "cat" },
+      { emoji: "🐕", name: "dog" },
+      { emoji: "🐇", name: "bunny" },
+      { emoji: "🐖", name: "pig" },
+      { emoji: "🐄", name: "cow" },
+      { emoji: "🐌", name: "snail" },
+      { emoji: "🦋", name: "butterfly" },
+      { emoji: "🐞", name: "ladybird" },
+      { emoji: "🦕", name: "dinosaur" },
+      { emoji: "🐳", name: "whale" },
+      { emoji: "🧸", name: "teddy bear" },
+      { emoji: "🍎", name: "apple" },
+      { emoji: "🍓", name: "strawberry" },
+      { emoji: "🎈", name: "balloon" },
+      { emoji: "🚗", name: "car" },
+      { emoji: "🚂", name: "train" },
+      { emoji: "🌻", name: "sunflower" },
+      { emoji: "⚽", name: "ball" },
+    ];
+    // Which half of the keyboard picks which side. Physical key positions (e.code) first,
+    // so it still splits down the middle on other layouts; characters are the fallback.
+    const LEFT_CODES = new Set([
+      "Backquote", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5",
+      "KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG",
+      "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "ArrowLeft",
+    ]);
+    const RIGHT_CODES = new Set([
+      "Digit6", "Digit7", "Digit8", "Digit9", "Digit0", "Minus", "Equal",
+      "KeyY", "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight", "Backslash",
+      "KeyH", "KeyJ", "KeyK", "KeyL", "Semicolon", "Quote",
+      "KeyN", "KeyM", "Comma", "Period", "Slash", "ArrowRight",
+    ]);
+    const LEFT_CHARS = "`12345qwertasdfgzxcvb";
+    const RIGHT_CHARS = "67890-=yuiop[]\\hjkl;'nm,./";
+    const SMALL = 0.45;      // the little one's size compared to the big one
+    const IN_TIME = 0.5;     // seconds for a new pair to pop up
+    const YAY_TIME = 2.4;    // seconds to celebrate before the next pair
+    const OUT_TIME = 0.35;   // seconds for the pair to pop away
+    const NEXT_DELAY = 0.3;  // empty grass between pairs
+    const HINT_TIME = 1.4;   // seconds the right one wiggles after a wrong pick
+    const IDLE_ASK = 8;      // seconds of nothing before the question is asked again
+
+    const canvas = document.getElementById("meadow");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [];
+    let L = {}; // layout: where the two stand, how big they are, the grass line
+    // The pair on the grass: one thing in two sizes, and which size we're looking for.
+    // state: in -> ask -> yay -> out (or party when time's up)
+    let pair = null;
+    let particles = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0, nextIn = 0, lastSpoke = -10;
+    let lastThing = null, wants = [];
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("bigAndSmallSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+
+      // The pair always stands side by side (left and right are half the lesson),
+      // standing on the same line so the size difference is easy to see.
+      const landscape = W >= H * 1.1;
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const u = clamp(Math.min(W, H) * 0.1, 36, 75);                // size of the question cloud
+      const cloudBottom = 14 + 2 * R + 8 + u * 1.8;
+      const ground = H * (landscape ? 0.86 : 0.76);
+      const big = Math.min(W * (landscape ? 0.36 : 0.46), (ground - cloudBottom) * 0.9);
+      L = { ground, big, small: big * SMALL, xs: landscape ? [W * 0.27, W * 0.73] : [W * 0.29, W * 0.75], horizon: H * (landscape ? 0.55 : 0.5), R, u };
+
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.horizon + H * 0.08, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.12, L.horizon - H * 0.12), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // A deep "bwom" for the big one and a high "pip" for the little one as they pop up.
+    function popInSound() {
+      tone(140, 0, 0.35, 0.25, "sine", 220);
+      tone(1200, 0.12, 0.12, 0.12, "sine", 1800);
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.08, i === 3 ? 0.5 : 0.25, 0.15, "triangle"));
+    }
+
+    function popOutSound() {
+      tone(700, 0, 0.25, 0.1, "sine", 250);
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      lastSpoke = time;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("bigAndSmallSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    // Big or little at random, but never the same three times running.
+    function nextWant() {
+      let want = pick(["big", "little"]);
+      if (wants.length >= 2 && wants.slice(-2).every((w) => w === want)) want = want === "big" ? "little" : "big";
+      wants.push(want);
+      return want;
+    }
+
+    function newPair() {
+      const thing = pick(THINGS.filter((t) => t !== lastThing));
+      lastThing = thing;
+      pair = {
+        thing, bigSide: Math.random() < 0.5 ? 0 : 1, want: nextWant(),
+        state: "in", t: 0, asked: 0, picked: -1, hint: 0, squish: [0, 0],
+      };
+      popInSound();
+      ask();
+    }
+
+    function ask() {
+      say(`Find the ${pair.want} one!`);
+      pair.asked = 0;
+    }
+
+    const rightSide = () => (pair.want === "big" ? pair.bigSide : 1 - pair.bigSide);
+
+    function choose(side) {
+      if (!pair || (pair.state !== "in" && pair.state !== "ask")) return;
+      if (side === rightSide()) {
+        pair.state = "yay";
+        pair.t = 0;
+        pair.picked = side;
+        score++;
+        cheer();
+        const size = side === pair.bigSide ? L.big : L.small;
+        sparkle(L.xs[side], L.ground - size * 0.5, size * 0.5);
+        say(`Yes! The ${pair.want} ${pair.thing.name}!`);
+      } else {
+        // Never a fail: a soft boop, a little squish so the tap registers, and the right one wiggles.
+        boop();
+        pair.squish[side] = 0.3;
+        pair.hint = HINT_TIME;
+        if (time - lastSpoke > 2.5) {
+          const other = pair.want === "big" ? "little" : "big";
+          say(`That's the ${other} one! Where's the ${pair.want} one?`);
+          pair.asked = 0;
+        }
+      }
+    }
+
+    // Keys that aren't on either half (space, enter…) give both a jiggle and ask again.
+    function nudge() {
+      if (!pair || (pair.state !== "in" && pair.state !== "ask")) return;
+      pair.squish = [0.3, 0.3];
+      boop();
+      if (time - lastSpoke > 2.5) ask();
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      if (pair) {
+        pair.t += dt;
+        pair.hint = Math.max(0, pair.hint - dt);
+        pair.squish = pair.squish.map((s) => Math.max(0, s - dt));
+        if (pair.state === "in" && pair.t >= IN_TIME) {
+          pair.state = "ask";
+          pair.t = 0;
+        } else if (pair.state === "ask") {
+          // Nothing happening? Ask again and give the right one a wiggle.
+          pair.asked += dt;
+          if (pair.asked > IDLE_ASK && phase === "playing") {
+            ask();
+            pair.hint = HINT_TIME;
+          }
+        } else if (pair.state === "yay" && pair.t >= YAY_TIME && phase === "playing") {
+          pair.state = "out";
+          pair.t = 0;
+          popOutSound();
+        } else if (pair.state === "out" && pair.t >= OUT_TIME) {
+          pair = null;
+          if (phase === "playing") nextIn = NEXT_DELAY;
+        } else if (pair.state === "party" && Math.random() < dt * 4) {
+          sparkle(rand(W * 0.1, W * 0.9), rand(H * 0.3, L.ground - L.big * 0.5), L.small * 0.3);
+        }
+      }
+
+      if (phase === "playing" && !pair && nextIn > 0) {
+        nextIn -= dt;
+        if (nextIn <= 0) newPair();
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.5) finishRound(`You found ${score} big and little one${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "#ffd84d";
+      ctx.beginPath();
+      ctx.arc(W - Math.min(100, W * 0.16), Math.min(130, L.horizon * 0.45), 42, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.2, L.horizon + H * 0.1, W * 0.6, H * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, L.horizon + H * 0.12, W * 0.55, H * 0.15, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, L.horizon + H * 0.1, W, H);
+
+      for (const f of flowers) {
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // One of the pair, standing on the grass line and scaled from its feet.
+    function drawThing(side) {
+      const big = side === pair.bigSide;
+      const size = big ? L.big : L.small;
+      const x = L.xs[side];
+      let scale = 1, rot = 0, hop = 0, sx = 1, sy = 1;
+      const st = pair.state, t = pair.t;
+      if (st === "in") scale = easeOutBack(clamp(t / IN_TIME, 0, 1));
+      else if (st === "out") scale = 1 - clamp(t / OUT_TIME, 0, 1) ** 2;
+      else sy = 1 + Math.sin(time * 2.5 + side * 2) * 0.02; // gentle breathing
+      if (st === "yay" && side === pair.picked) {
+        // Happy bounces with a squash on each landing.
+        const b = Math.abs(Math.sin(t * 7));
+        hop = b * L.small * 0.6;
+        sx = 1 + (1 - b) * 0.08;
+        sy = 1 - (1 - b) * 0.08;
+        rot = Math.sin(t * 7) * 0.08;
+      }
+      if (st === "party") {
+        const b = Math.abs(Math.sin(t * 6 + side * Math.PI / 2));
+        hop = b * L.small * 0.5;
+        rot = Math.sin(t * 6 + side) * 0.1;
+      }
+      if (pair.hint > 0 && side === rightSide() && (st === "ask" || st === "in")) {
+        rot += Math.sin(pair.hint * 30) * 0.14 * Math.min(1, pair.hint);
+      }
+      const sq = pair.squish[side];
+      if (sq > 0) {
+        sy *= 1 - Math.sin((sq / 0.3) * Math.PI) * 0.1;
+        sx *= 1 + Math.sin((sq / 0.3) * Math.PI) * 0.06;
+      }
+      if (scale <= 0) return;
+
+      // Shadow stays on the grass while it hops.
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.ellipse(x, L.ground, size * 0.4 * scale * (1 - 0.3 * hop / L.small), size * 0.06 * scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(x, L.ground - hop);
+      ctx.rotate(rot);
+      ctx.scale(scale * sx, scale * sy);
+      ctx.font = `${size}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(pair.thing.emoji, 0, -size * 0.5);
+      ctx.restore();
+    }
+
+    // The word we're looking for, in a cloud under the clock: "BIG" drawn big, "little" drawn little.
+    function drawPrompt() {
+      if (phase === "title" || !pair || !(pair.state === "in" || pair.state === "ask")) return;
+      const u = L.u;
+      const pop = pair.state === "ask" ? 1 : easeOutBack(clamp(pair.t / IN_TIME, 0, 1));
+      if (pop <= 0) return;
+      ctx.save();
+      ctx.translate(W / 2, 14 + 2 * L.R + 8 + u * 0.92 + Math.sin(time * 2) * 3);
+      ctx.scale(pop, pop);
+
+      ctx.shadowColor = "rgba(58, 46, 92, 0.2)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      for (const [x, y, r] of [[-1.05, 0.15, 0.5], [-0.45, -0.3, 0.62], [0.35, -0.25, 0.58], [1.0, 0.12, 0.52], [0, 0.25, 0.6]]) {
+        ctx.moveTo((x + r) * u, y * u);
+        ctx.arc(x * u, y * u, r * u, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+
+      const isBig = pair.want === "big";
+      ctx.font = `600 ${u * (isBig ? 1.05 : 0.55)}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = isBig ? "#ff5d73" : "#5b8def";
+      ctx.fillText(isBig ? "BIG" : "little", 0, u * 0.05);
+      ctx.restore();
+    }
+
+    function draw() {
+      drawScene();
+      if (pair) {
+        drawThing(0);
+        drawThing(1);
+      }
+      drawPrompt();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      pair = null;
+      wants = [];
+      nextIn = 0.4;
+      timer.start();
+    }
+
+    // 0 for the left half of the keyboard, 1 for the right, -1 for neither.
+    function sideOf(e) {
+      if (LEFT_CODES.has(e.code)) return 0;
+      if (RIGHT_CODES.has(e.code)) return 1;
+      const k = e.key.length === 1 ? e.key.toLowerCase() : "";
+      if (k && LEFT_CHARS.includes(k)) return 0;
+      if (k && RIGHT_CHARS.includes(k)) return 1;
+      return -1;
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const side = sideOf(e);
+      if (side < 0) nudge();
+      else choose(side);
+    });
+
+    // Tap anywhere on a side to pick that one.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      choose(e.clientX < W / 2 ? 0 : 1);
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: a fresh pair (or the one already out) has a little dance party to say goodbye.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      if (!pair || pair.state === "out") newPair();
+      pair.state = "party";
+      pair.t = 0;
+      pair.hint = 0;
+      cheer();
+      say("Bye bye, big and little!");
+    };
+
+    setSound(soundOn);
+    // A big and little elephant wait on the title screen.
+    pair = { thing: THINGS[0], bigSide: 0, want: "big", state: "ask", t: 0, asked: 0, picked: -1, hint: 0, squish: [0, 0] };
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

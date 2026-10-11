@@ -10,8 +10,18 @@ Every game is a single static HTML file — no build step, no dependencies.
 | 🫧 Bubble Pop | Pop rising letter/number bubbles by key or tap |
 | 🐮 Peekaboo Farm | Press the number on the wiggling hiding spot to find the animal and hear its name and sound |
 | 🎨 Colour Splash | Fling paint and learn colour names |
-| 🐤 Duckling Parade | Count ducklings to ten, then they jump in the pond |
+| 🐤 Duckling Parade | Type the next number to add a duckling; at twenty they all jump in the pond |
 | 🎹 Animal Piano | Each keyboard row is an animal that sings a note |
+| 🔷 Shape Sorter | Post the falling shape through the matching numbered hole and hear its name, then its colour |
+| 🐘 Big & Small | Find the big one or the little one with the left or right half of the keyboard |
+| 🍎 How Many Apples? | Count the apples on the tree and press that number; they drop into the basket one by one |
+| 🚂 Train Cars | Every key adds a numbered carriage; at five the train toots and chugs away |
+| 🚃 My Name | Find each letter of your own name to fill the train's carriages |
+| 🦁 Alphabet Zoo | Press a letter and an animal pops out of the zoo gate: "B is for Bear!" |
+| 🃏 Pairs | Flip numbered cards to find matching animal pairs |
+| 🧩 What Comes Next? | Finish the repeating pattern of fruit and friends |
+| 😊 How Do I Feel? | A big face shows a feeling; find the matching small face |
+| 🧸 Dress Teddy | Pick the right clothes for sun, rain or snow and Teddy dances |
 
 Each round lasts two minutes, shown on an analog countdown clock
 (`shared/round-timer.js`).

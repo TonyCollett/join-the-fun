@@ -1,0 +1,1062 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Dress Teddy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #2ec4b6; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Dress Teddy</h1>
+    <p>Press any key to play! 🧸</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const INK = "#3a2e5c";
+    const WEATHERS = {
+      sunny: {
+        intro: "It's sunny!", word: "sunshine", ready: "Teddy is ready for the sunshine!",
+        sky: ["#5fc2ff", "#d9f3ff"], hill: "#9bd88a", grass: "#6cbf5c", cloud: "#ffffff",
+      },
+      rainy: {
+        intro: "It's raining!", word: "rain", ready: "Teddy is ready for the rain!",
+        sky: ["#7f8ea6", "#c6d0dd"], hill: "#7fb872", grass: "#57a24a", cloud: "#8e97a8",
+      },
+      snowy: {
+        intro: "It's snowing!", word: "snow", ready: "Teddy is ready for the snow!",
+        sky: ["#a7b6d4", "#eef3fb"], hill: "#ffffff", grass: "#f2f6fc", cloud: "#dfe5ef",
+      },
+    };
+    // Things Teddy can wear. part says what they hang on to: "head" (x, y from the middle of
+    // Teddy's head), "body" (from between Teddy's feet), "neck" (body, but tucked under the head)
+    // or "paw". Sizes and positions are in units of Teddy's height. pair = one on each side.
+    const ITEMS = [
+      { name: "sun hat", emoji: "👒", weather: "sunny", part: "head", x: 0, y: -0.25, size: 0.55,
+        line: "A sun hat keeps the sun off Teddy's head!" },
+      { name: "sunglasses", emoji: "🕶️", weather: "sunny", part: "head", x: 0, y: -0.04, size: 0.3,
+        line: "Sunglasses help Teddy see in the sunshine!" },
+      { name: "shorts", emoji: "🩳", weather: "sunny", part: "body", x: 0, y: -0.2, size: 0.36,
+        line: "Shorts keep Teddy nice and cool!" },
+      { name: "wellies", emoji: "👢", weather: "rainy", part: "body", x: 0.16, y: -0.12, size: 0.25, pair: true,
+        line: "Wellies keep Teddy's feet dry!" },
+      { name: "umbrella", emoji: "☂️", weather: "rainy", part: "paw", x: 0.12, y: -0.3, size: 0.62,
+        line: "An umbrella keeps the rain off Teddy!" },
+      { name: "raincoat", emoji: "🧥", weather: "rainy", part: "body", x: 0, y: -0.38, size: 0.6,
+        line: "A raincoat keeps Teddy dry!" },
+      { name: "scarf", emoji: "🧣", weather: "snowy", part: "neck", x: 0, y: -0.5, size: 0.32,
+        line: "A scarf keeps Teddy's neck cosy!" },
+      { name: "woolly hat", draw: drawWoollyHat, weather: "snowy", part: "head", x: 0, y: -0.23, size: 0.6,
+        line: "A woolly hat keeps Teddy's ears warm!" },
+      { name: "mittens", emoji: "🧤", weather: "snowy", part: "paw", x: 0, y: 0, size: 0.22, pair: true,
+        line: "Mittens keep Teddy's paws warm!" },
+    ];
+    const PARTS = ["body", "neck", "head", "paw"]; // drawing order, back to front
+    const WEAR_PER_WEATHER = 3; // things to put on before the weather changes
+    const FLY_TIME = 0.6;       // seconds for a picked item to fly onto Teddy
+    const NEXT_DELAY = 2.4;     // seconds of dancing before the next choices
+    const CHANGE_DELAY = 4.2;   // seconds after the last item before the weather changes
+    const INTRO_DELAY = 1.4;    // seconds of new weather before the choices pop up
+    const REMIND_TIME = 10;     // seconds without an answer before asking again
+    const RAIN_RATE = 320;      // raindrops per second per 1000px of width, in full rain
+    const SNOW_RATE = 45;       // snowflakes per second per 1000px of width, in full snow
+
+    const canvas = document.getElementById("scene");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    let W = 0, H = 0, landscape = true;
+    let L = {}; // layout: Teddy's feet and height, horizon, choice card size and spots
+    let clouds = [], flowers = [], puddles = [], drops = [], flakes = [], particles = [], offs = [];
+    let weather = "sunny", prevWeather = "sunny", blend = 1; // blend 0 -> 1 from prevWeather to weather
+    let teddy = { anim: "idle", t: 0, worn: [] };
+    let cards = [];       // choices: { item, t, poke, wiggle, fade, gone }
+    let flyer = null;     // the item flying from its card onto Teddy
+    let state = "intro";  // intro -> ask -> fly -> dance -> ask ... -> change -> intro
+    let stateT = 0, remindAt = 0, lastWrongSay = -9, lastHop = -1, chirpAt = 3, ambientAt = 0;
+    let phase = "title";  // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("dressTeddySound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // Wide screens: Teddy on the left, choices in a column on the right.
+      // Tall screens: Teddy in the middle, choices in a row along the bottom.
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const clockBottom = 14 + 2 * R + 8;
+      landscape = W >= H * 1.1;
+      let b, spots, tx, ty, s;
+      if (landscape) {
+        b = Math.min(H * 0.25, W * 0.17);
+        const gap = b * 0.17;
+        spots = [0, 1, 2].map((i) => ({ x: W * 0.8, y: H / 2 + (i - 1) * (b + gap) }));
+        tx = W * 0.36;
+        ty = H * 0.9;
+        s = Math.min(H * 0.62, W * 0.36);
+        // Shrink Teddy (umbrella and hat included) until it stays clear of the clock.
+        while (s > 60 && ty - s * 1.33 < clockBottom && tx + s * 0.5 > W / 2 - R - 8) s *= 0.96;
+        s = Math.min(s, (ty - 10) / 1.33);
+      } else {
+        b = Math.min(W * 0.28, H * 0.17);
+        const cardY = H - b / 2 - Math.max(16, H * 0.035);
+        spots = [0, 1, 2].map((i) => ({ x: W / 2 + (i - 1) * b * 1.15, y: cardY }));
+        tx = W / 2;
+        ty = cardY - b / 2 - Math.max(14, H * 0.03);
+        s = Math.min((ty - clockBottom) / 1.33, W * 0.7);
+      }
+      const horizon = ty - s * 0.3;
+      L = { b, spots, tx, ty, s, horizon, clockBottom };
+
+      clouds = Array.from({ length: Math.max(4, Math.round(W / 260)) }, (_, i) => ({
+        x: rand(0, W), y: rand(H * 0.1, Math.max(H * 0.12, horizon * 0.5)), s: rand(0.6, 1.1), speed: rand(8, 18), extra: i >= 2,
+      }));
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(horizon + 6, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      puddles = Array.from({ length: Math.max(3, Math.round(W / 300)) }, () => ({
+        x: rand(0, W), y: rand(horizon + (H - horizon) * 0.3, H - 10), r: rand(30, 70),
+      }));
+      drops = [];
+      flakes = [];
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null, ambient = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // Looping pitter-patter for rain and a soft whoosh of wind for snow; volumes follow the weather.
+    function startAmbient() {
+      const a = audio(); if (!a || ambient) return;
+      const loop = (type, freq) => {
+        const src = a.createBufferSource();
+        const filter = a.createBiquadFilter();
+        const gain = a.createGain();
+        src.buffer = noise;
+        src.loop = true;
+        filter.type = type;
+        filter.frequency.value = freq;
+        gain.gain.value = 0;
+        src.connect(filter).connect(gain).connect(master);
+        src.start();
+        return gain;
+      };
+      ambient = { rain: loop("highpass", 2000), wind: loop("lowpass", 450) };
+    }
+
+    function updateAmbient() {
+      if (!ambient || time < ambientAt) return;
+      ambientAt = time + 0.2;
+      const on = soundOn && (phase === "playing" || phase === "finale") ? 1 : 0;
+      const t = actx.currentTime;
+      ambient.rain.gain.setTargetAtTime(0.1 * weight("rainy") * on, t, 0.3);
+      ambient.wind.gain.setTargetAtTime(0.18 * weight("snowy") * on * (0.6 + 0.4 * Math.sin(time * 0.7)), t, 0.3);
+    }
+
+    function chirp() {
+      const f = rand(2200, 2800);
+      tone(f, 0, 0.07, 0.05, "sine", f * 1.3);
+      tone(f * 1.05, 0.11, 0.07, 0.05, "sine", f * 1.4);
+    }
+
+    // A little tune for each kind of weather.
+    function weatherJingle(w) {
+      if (w === "sunny") [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.1, 0.35, 0.15, "triangle"));
+      if (w === "rainy") [1568, 1318.5, 1174.7, 1046.5, 880].forEach((f, i) => tone(f, i * 0.13, 0.15, 0.13, "triangle", f * 0.9));
+      if (w === "snowy") [2093, 2637, 3136, 2637].forEach((f, i) => tone(f, i * 0.16, 0.7, 0.07, "sine"));
+    }
+
+    function whoosh() {
+      tone(300, 0, 0.35, 0.12, "sine", 1100);
+    }
+
+    function squeak() {
+      tone(900, 0, 0.1, 0.12, "sine", 1400);
+      tone(1400, 0.09, 0.1, 0.1, "sine", 1000);
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("dressTeddySound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+      if (on && phase === "playing") startAmbient();
+    }
+
+    // ---------- Game ----------
+
+    // How much of a weather is showing right now (0-1), while one fades into the next.
+    function weight(w) {
+      return (w === weather ? blend : 0) + (w === prevWeather ? 1 - blend : 0);
+    }
+
+    const isWorn = (item) => teddy.worn.some((w) => w.item === item);
+
+    // Three choices: one thing for this weather that Teddy isn't wearing yet,
+    // and one thing from each of the other weathers.
+    function newChoices() {
+      const right = pick(ITEMS.filter((it) => it.weather === weather && !isWorn(it)));
+      const wrong = Object.keys(WEATHERS).filter((w) => w !== weather)
+        .map((w) => pick(ITEMS.filter((it) => it.weather === w)));
+      cards = shuffle([right, ...wrong]).map((item) => ({ item, t: 0, poke: 0, wiggle: 0, fade: 0, gone: false }));
+      state = "ask";
+      stateT = 0;
+      remindAt = time + REMIND_TIME;
+    }
+
+    // The weather turns; Teddy twirls out of yesterday's clothes.
+    function changeWeather(w) {
+      prevWeather = weather;
+      weather = w;
+      blend = prevWeather === weather ? 1 : 0;
+      for (const worn of teddy.worn) {
+        const p = itemScreenPos(worn.item);
+        offs.push({ item: worn.item, x: p.x, y: p.y, size: p.size, vx: rand(-1, 1) * L.s, vy: -rand(1.2, 1.8) * L.s, spin: rand(-6, 6), t: 0 });
+      }
+      teddy.worn = [];
+      if (offs.length) { teddy.anim = "twirl"; teddy.t = 0; whoosh(); }
+      cards = [];
+      state = "intro";
+      stateT = 0;
+      weatherJingle(w);
+      say(`${WEATHERS[w].intro} What should Teddy wear?`);
+    }
+
+    function choose(slot) {
+      if (state !== "ask") return;
+      const card = cards[slot];
+      if (!card || card.fade > 0) return;
+      if (card.item.weather === weather) {
+        card.gone = true;
+        for (const c of cards) if (c !== card) c.fade = 0.001;
+        const s = L.spots[slot];
+        flyer = { item: card.item, x0: s.x, y0: s.y, size0: L.b * 0.6, t: 0 };
+        state = "fly";
+        stateT = 0;
+        if (phase === "playing") score++;
+        whoosh();
+      } else {
+        // Never a fail: a soft boop, Teddy shakes his head, and the right one wiggles to help.
+        card.poke = 0.4;
+        boop();
+        if (teddy.anim !== "dance") { teddy.anim = "shake"; teddy.t = 0; }
+        for (const c of cards) if (c.item.weather === weather) c.wiggle = 1.6;
+        if (time - lastWrongSay > 2) {
+          lastWrongSay = time;
+          const name = card.item.name[0].toUpperCase() + card.item.name.slice(1);
+          say(`${name}? Teddy needs something for the ${WEATHERS[weather].word}!`);
+        }
+        remindAt = time + REMIND_TIME;
+      }
+    }
+
+    // The flying item lands: Teddy puts it on and does a happy dance.
+    function dressTeddy(item) {
+      teddy.worn.push({ item, t: 0 });
+      teddy.anim = "dance";
+      teddy.t = 0;
+      const p = itemScreenPos(item);
+      sparkle(p.x, p.y, L.s * 0.12);
+      cheer();
+      if (phase !== "playing") return;
+      state = "dance";
+      stateT = 0;
+      const more = teddy.worn.length < WEAR_PER_WEATHER;
+      say(`${item.line} ${more ? "What else should Teddy wear?" : WEATHERS[weather].ready}`);
+    }
+
+    // Any other key (or a tap on Teddy): a little hop and a squeak.
+    function hop() {
+      if (time - lastHop < 0.3) return;
+      lastHop = time;
+      if (teddy.anim === "idle" || teddy.anim === "hop") { teddy.anim = "hop"; teddy.t = 0; }
+      squeak();
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    // A whole number of things to spawn this frame, rounding the fraction up at random.
+    const count = (n) => Math.floor(n) + (Math.random() < n % 1 ? 1 : 0);
+
+    const ANIM_TIME = { hop: 0.4, shake: 0.9, dance: 1.8, twirl: 0.9 };
+
+    function update(dt) {
+      timer.update(dt);
+      stateT += dt;
+      blend = Math.min(1, blend + dt / 1.5);
+
+      teddy.t += dt;
+      if (teddy.anim !== "idle" && teddy.t >= ANIM_TIME[teddy.anim] * (phase === "finale" ? 3 : 1)) {
+        teddy.anim = "idle";
+        teddy.t = 0;
+      }
+      for (const w of teddy.worn) w.t += dt;
+
+      if (flyer) {
+        flyer.t += dt;
+        if (flyer.t >= FLY_TIME) {
+          const item = flyer.item;
+          flyer = null;
+          dressTeddy(item);
+        }
+      }
+
+      for (const c of cards) {
+        c.t += dt;
+        c.poke = Math.max(0, c.poke - dt);
+        c.wiggle = Math.max(0, c.wiggle - dt);
+        if (c.fade > 0) c.fade = Math.min(1, c.fade + dt * 3);
+      }
+
+      if (phase === "playing") {
+        if (state === "intro" && stateT >= INTRO_DELAY) newChoices();
+        if (state === "dance") {
+          if (teddy.worn.length < WEAR_PER_WEATHER) {
+            if (stateT >= NEXT_DELAY) newChoices();
+          } else if (stateT >= CHANGE_DELAY) {
+            changeWeather(pick(Object.keys(WEATHERS).filter((w) => w !== weather)));
+          }
+        }
+        if (state === "ask" && time >= remindAt) {
+          remindAt = time + REMIND_TIME;
+          say(`What should Teddy wear in the ${WEATHERS[weather].word}?`);
+          for (const c of cards) if (c.item.weather === weather) c.wiggle = 1.6;
+        }
+        if (weight("sunny") > 0.6 && time >= chirpAt) { chirp(); chirpAt = time + rand(3, 6); }
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.6) finishRound(`Teddy wore ${score} thing${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+      updateAmbient();
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      // Rain and snow fall behind Teddy.
+      const rainN = count(weight("rainy") * RAIN_RATE * (W / 1000) * dt);
+      for (let i = 0; i < rainN && drops.length < 700; i++) {
+        drops.push({ x: rand(-50, W + 100), y: rand(-60, -10), v: rand(900, 1200), len: rand(14, 24), floor: rand(L.horizon, H) });
+      }
+      for (const d of drops) { d.y += d.v * dt; d.x -= d.v * 0.12 * dt; }
+      drops = weight("rainy") > 0 ? drops.filter((d) => d.y < d.floor) : [];
+      const snowN = count(weight("snowy") * SNOW_RATE * (W / 1000) * dt);
+      for (let i = 0; i < snowN && flakes.length < 400; i++) {
+        flakes.push({ x: rand(0, W), y: -10, v: rand(45, 100), r: rand(2.5, 6), wob: rand(0, 6) });
+      }
+      for (const f of flakes) { f.y += f.v * dt; f.x += Math.sin(time * 1.5 + f.wob) * 20 * dt; }
+      flakes = weight("snowy") > 0 ? flakes.filter((f) => f.y < H + 10) : [];
+
+      for (const o of offs) {
+        o.t += dt;
+        o.vy += L.s * 4 * dt;
+        o.x += o.vx * dt;
+        o.y += o.vy * dt;
+      }
+      offs = offs.filter((o) => o.t < 1.2);
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    // A weather colour, mixed between the old weather and the new one.
+    function mix(key) {
+      const a = hexRgb(WEATHERS[prevWeather][key]), b = hexRgb(WEATHERS[weather][key]);
+      return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * blend)).join(", ")})`;
+    }
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      for (const [x, y, r] of list) {
+        c.beginPath();
+        c.arc(x, y, r, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawScene() {
+      const sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, mixAt("sky", 0));
+      sky.addColorStop(1, mixAt("sky", 1));
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      // A smiley sun with turning rays.
+      const sun = weight("sunny");
+      if (sun > 0.01) {
+        const r = clamp(Math.min(W, H) * 0.07, 32, 70);
+        const sx = Math.max(r * 1.6 + 60, W * 0.12), sy = Math.max(r * 1.6, L.horizon * 0.28);
+        ctx.save();
+        ctx.globalAlpha = sun;
+        ctx.translate(sx, sy - (1 - sun) * r);
+        ctx.rotate(time * 0.3);
+        ctx.strokeStyle = "#ffcf33";
+        ctx.lineWidth = r * 0.14;
+        ctx.lineCap = "round";
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * Math.PI * 2;
+          const len = 1.35 + 0.12 * Math.sin(time * 3 + i);
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 1.2, Math.sin(a) * r * 1.2);
+          ctx.lineTo(Math.cos(a) * r * len * 1.15, Math.sin(a) * r * len * 1.15);
+          ctx.stroke();
+        }
+        ctx.rotate(-time * 0.3);
+        circles(ctx, "#ffd84d", [[0, 0, r]]);
+        ctx.strokeStyle = "#e09b00";
+        ctx.lineWidth = r * 0.08;
+        ctx.beginPath();
+        ctx.arc(0, r * 0.05, r * 0.45, 0.2 * Math.PI, 0.8 * Math.PI);
+        ctx.stroke();
+        circles(ctx, "#e09b00", [[-r * 0.3, -r * 0.2, r * 0.09], [r * 0.3, -r * 0.2, r * 0.09]]);
+        ctx.restore();
+      }
+
+      // Clouds: a couple on sunny days, more (and greyer) when it rains or snows.
+      for (const c of clouds) {
+        ctx.save();
+        ctx.globalAlpha = c.extra ? 1 - sun : 0.95;
+        ctx.fillStyle = mix("cloud");
+        ctx.translate(c.x, c.y);
+        const big = c.extra ? 1 : 1 + 0.3 * (1 - sun);
+        ctx.scale(c.s * big, c.s * big);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Hills and grass (white when it snows), with flowers in the sun and puddles in the rain.
+      const hz = L.horizon;
+      ctx.fillStyle = mix("hill");
+      ctx.beginPath();
+      ctx.ellipse(W * 0.2, hz + H * 0.02, W * 0.6, H * 0.12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, hz + H * 0.03, W * 0.55, H * 0.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = mix("grass");
+      ctx.fillRect(0, hz + H * 0.02, W, H);
+
+      const snow = weight("snowy");
+      ctx.globalAlpha = 1 - snow;
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+      ctx.globalAlpha = weight("rainy") * 0.8;
+      for (const p of puddles) {
+        ctx.fillStyle = "#6fa8d8";
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, p.r, p.r * 0.25, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Rings where raindrops land.
+        const u = (time * 1.2 + p.x) % 1;
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.7 * (1 - u)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(p.x + p.r * 0.3, p.y, p.r * 0.4 * u, p.r * 0.1 * u, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      // Leftover drops and flakes fade away as their weather passes.
+      ctx.globalAlpha = Math.min(1, weight("rainy") * 2);
+      ctx.strokeStyle = "rgba(225, 238, 255, 0.75)";
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (const d of drops) {
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x + d.len * 0.12, d.y - d.len);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = Math.min(1, weight("snowy") * 2);
+      ctx.fillStyle = "#fff";
+      for (const f of flakes) {
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // The sky's top (0) or bottom (1) colour, mixed between weathers.
+    function mixAt(key, i) {
+      const a = hexRgb(WEATHERS[prevWeather][key][i]), b = hexRgb(WEATHERS[weather][key][i]);
+      return `rgb(${a.map((v, j) => Math.round(v + (b[j] - v) * blend)).join(", ")})`;
+    }
+
+    // A red bobble hat with a stripy band, centred on the origin, size wide.
+    function drawWoollyHat(c, size) {
+      c.save();
+      c.scale(size, size);
+      c.fillStyle = "#ff5d73";
+      c.beginPath();
+      c.moveTo(-0.45, 0.12);
+      c.bezierCurveTo(-0.45, -0.52, 0.45, -0.52, 0.45, 0.12);
+      c.closePath();
+      c.fill();
+      c.strokeStyle = "#fff";
+      c.lineWidth = 0.07;
+      c.lineCap = "round";
+      c.beginPath();
+      c.moveTo(-0.36, -0.1);
+      c.quadraticCurveTo(0, -0.2, 0.36, -0.1);
+      c.stroke();
+      c.fillStyle = "#ffb627";
+      c.beginPath();
+      c.moveTo(-0.46, 0.06);
+      c.lineTo(0.46, 0.06);
+      c.arcTo(0.54, 0.06, 0.54, 0.16, 0.1);
+      c.arcTo(0.54, 0.26, 0.44, 0.26, 0.1);
+      c.lineTo(-0.44, 0.26);
+      c.arcTo(-0.54, 0.26, -0.54, 0.16, 0.1);
+      c.arcTo(-0.54, 0.06, -0.44, 0.06, 0.1);
+      c.fill();
+      c.strokeStyle = "rgba(0, 0, 0, 0.15)";
+      c.lineWidth = 0.03;
+      c.beginPath();
+      for (let x = -0.4; x <= 0.41; x += 0.1) {
+        c.moveTo(x, 0.09);
+        c.lineTo(x, 0.23);
+      }
+      c.stroke();
+      circles(c, "#fff", [[0, -0.4, 0.14]]);
+      circles(c, "#e8ecf4", [[0.04, -0.36, 0.07]]);
+      c.restore();
+    }
+
+    // Draw an item centred at (x, y), size pixels across. Wellies face the other way on the right foot.
+    function drawItem(c, item, x, y, size, flip = false) {
+      c.save();
+      c.translate(x, y);
+      if (flip) c.scale(-1, 1);
+      if (item.draw) item.draw(c, size);
+      else {
+        c.font = `${size}px ${EMOJI_FONT}`;
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+        c.fillText(item.emoji, 0, 0);
+      }
+      c.restore();
+    }
+
+    // Teddy's pose right now: how far up he's hopped, his lean, head turn and arm angles.
+    function pose() {
+      const t = teddy.t, a = teddy.anim;
+      const umbrella = teddy.worn.some((w) => w.item.name === "umbrella");
+      const p = {
+        hop: 0, rot: 0, head: Math.sin(time * 1.3) * 0.04, sx: 1,
+        arms: [umbrella ? 2.5 : 0.4 + Math.sin(time * 2) * 0.05, 0.4 + Math.sin(time * 2 + 1) * 0.05],
+      };
+      if (a === "hop") p.hop = Math.sin(Math.PI * Math.min(1, t / ANIM_TIME.hop)) * 0.12;
+      if (a === "dance") {
+        p.hop = Math.abs(Math.sin(t * 9)) * 0.07;
+        p.rot = Math.sin(t * 9) * 0.12;
+        p.arms = [umbrella ? 2.5 : 2.3 + Math.sin(t * 14) * 0.35, 2.3 - Math.sin(t * 14) * 0.35];
+      }
+      if (a === "shake") p.head = Math.sin(t * 18) * 0.22 * (1 - t / ANIM_TIME.shake);
+      if (a === "twirl") { p.sx = Math.cos((t / ANIM_TIME.twirl) * Math.PI * 2); p.hop = Math.sin(Math.PI * t / ANIM_TIME.twirl) * 0.1; }
+      return p;
+    }
+
+    const SHOULDER = { x: 0.2, y: -0.52 };
+    const HEAD = { x: 0, y: -0.8 };
+    // Where a paw is (side -1 is the left), in Teddy units from between his feet.
+    function pawAt(side, angle) {
+      return { x: side * (SHOULDER.x + Math.sin(angle) * 0.22), y: SHOULDER.y + Math.cos(angle) * 0.22 };
+    }
+
+    // Where each copy of an item sits on Teddy, in Teddy units (head items relative to the head).
+    function itemSpots(item, p) {
+      if (item.part === "paw") {
+        if (item.pair) return [-1, 1].map((side, i) => ({ ...pawAt(side, p.arms[i]), flip: side > 0 }));
+        const paw = pawAt(-1, p.arms[0]); // umbrella goes in the left paw
+        return [{ x: paw.x + item.x, y: paw.y + item.y }];
+      }
+      if (item.pair) return [{ x: -item.x, y: item.y }, { x: item.x, y: item.y, flip: true }];
+      return [{ x: item.x, y: item.y }];
+    }
+
+    // An item's middle on screen when Teddy's standing still, so things know where to fly.
+    function itemScreenPos(item) {
+      const p = pose();
+      const spots = itemSpots(item, { ...p, arms: teddy.worn.some((w) => w.item.name === "umbrella") || item.name === "umbrella" ? [2.5, 0.4] : [0.4, 0.4] });
+      let x = 0, y = 0;
+      for (const s of spots) { x += s.x; y += s.y; }
+      x /= spots.length;
+      y /= spots.length;
+      if (item.part === "head") { x += HEAD.x; y += HEAD.y; }
+      return { x: L.tx + x * L.s, y: L.ty + y * L.s, size: item.size * L.s };
+    }
+
+    function drawWorn(part, p, s) {
+      for (const w of teddy.worn) {
+        if (w.item.part !== part) continue;
+        const pop = easeOutBack(Math.min(1, w.t / 0.3));
+        for (const spot of itemSpots(w.item, p)) {
+          drawItem(ctx, w.item, spot.x * s, spot.y * s, w.item.size * s * pop, spot.flip);
+        }
+      }
+    }
+
+    function drawTeddy() {
+      const { tx, ty, s } = L;
+      const p = pose();
+      const FUR = "#c68b59", DARK = "#9c6538", LIGHT = "#f1d3b0";
+      const ell = (x, y, rx, ry, color, rot = 0) => {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.ellipse(x * s, y * s, rx * s, ry * s, rot, 0, Math.PI * 2);
+        ctx.fill();
+      };
+
+      // Shadow on the ground shrinks as Teddy hops.
+      ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
+      ctx.beginPath();
+      ctx.ellipse(tx, ty, s * 0.32 * (1 - p.hop), s * 0.05, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(tx, ty - p.hop * s);
+      ctx.rotate(p.rot);
+      ctx.scale(p.sx, 1);
+
+      // Legs, feet and body.
+      for (const side of [-1, 1]) {
+        ell(side * 0.14, -0.13, 0.11, 0.13, FUR);
+        ell(side * 0.16, -0.05, 0.12, 0.07, FUR);
+        ell(side * 0.17, -0.05, 0.065, 0.04, LIGHT);
+      }
+      ell(0, -0.36, 0.27, 0.27, FUR);
+      ell(0, -0.33, 0.17, 0.18, LIGHT);
+
+      // Arms reach from the shoulders to the paws.
+      for (const [i, side] of [[0, -1], [1, 1]]) {
+        const paw = pawAt(side, p.arms[i]);
+        const mx = (paw.x + side * SHOULDER.x) / 2, my = (paw.y + SHOULDER.y) / 2;
+        ell(mx, my, 0.075, 0.15, FUR, -side * p.arms[i]);
+        ell(paw.x, paw.y, 0.06, 0.06, DARK);
+      }
+
+      drawWorn("body", p, s);
+      drawWorn("neck", p, s);
+
+      // Head, turning (or shaking "no") around the neck.
+      ctx.save();
+      ctx.translate(HEAD.x * s, HEAD.y * s);
+      ctx.rotate(p.head);
+      for (const side of [-1, 1]) {
+        ell(side * 0.19, -0.2, 0.09, 0.09, FUR);
+        ell(side * 0.19, -0.2, 0.05, 0.05, LIGHT);
+      }
+      ell(0, 0, 0.26, 0.25, FUR);
+      ell(0, 0.08, 0.12, 0.085, LIGHT);
+      ell(0, 0.04, 0.045, 0.032, INK);
+      // Eyes blink every few seconds.
+      const blink = time % 3.7 < 0.12 ? 0.15 : 1;
+      for (const side of [-1, 1]) {
+        ell(side * 0.095, -0.05, 0.03, 0.03 * blink, INK);
+        if (blink === 1) ell(side * 0.095 - 0.01, -0.06, 0.01, 0.01, "#fff");
+      }
+      // Smile, opening wide while dancing.
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = s * 0.014;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      if (teddy.anim === "dance" || phase === "finale") {
+        ctx.moveTo(-0.06 * s, 0.09 * s);
+        ctx.quadraticCurveTo(0, 0.17 * s, 0.06 * s, 0.09 * s);
+        ctx.closePath();
+        ctx.fillStyle = "#b8434f";
+        ctx.fill();
+      } else {
+        ctx.moveTo(0, 0.07 * s);
+        ctx.lineTo(0, 0.1 * s);
+        ctx.moveTo(-0.05 * s, 0.1 * s);
+        ctx.quadraticCurveTo(0, 0.14 * s, 0.05 * s, 0.1 * s);
+      }
+      ctx.stroke();
+      drawWorn("head", p, s);
+      ctx.restore();
+
+      drawWorn("paw", p, s);
+      ctx.restore();
+    }
+
+    // A choice card: the item on a white card with its number in the corner.
+    function drawCard(c, i) {
+      if (c.gone) return;
+      const s = L.spots[i], b = L.b;
+      const pop = easeOutBack(clamp((c.t - i * 0.12) / 0.35, 0, 1));
+      if (pop <= 0) return;
+      let angle = 0, scale = pop;
+      if (c.poke > 0) angle = Math.sin(c.poke * 50) * 0.08 * (c.poke / 0.4);
+      if (c.wiggle > 0) {
+        angle += Math.sin(c.wiggle * 30) * 0.1 * Math.min(1, c.wiggle);
+        scale *= 1 + 0.08 * Math.abs(Math.sin(c.wiggle * 8));
+      }
+      ctx.save();
+      ctx.globalAlpha = 1 - c.fade;
+      ctx.translate(s.x, s.y);
+      ctx.rotate(angle);
+      ctx.scale(scale, scale);
+
+      ctx.shadowColor = "rgba(58, 46, 92, 0.25)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 5;
+      ctx.fillStyle = "#fff";
+      roundRect(-b / 2, -b / 2, b, b, b * 0.2);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      if (c.wiggle > 0) {
+        ctx.strokeStyle = "#ffb627";
+        ctx.lineWidth = b * 0.05;
+        ctx.stroke();
+      }
+
+      drawItem(ctx, c.item, b * 0.04, b * 0.06, b * 0.6);
+
+      const br = b * 0.15;
+      const bx = -b / 2 + br * 0.75, by = -b / 2 + br * 0.75;
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = c.wiggle > 0 ? "#ffb627" : INK;
+      ctx.lineWidth = br * 0.16;
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = `600 ${br * 1.4}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = INK;
+      ctx.fillText(i + 1, bx, by + br * 0.08);
+      ctx.restore();
+    }
+
+    // The picked item swoops in an arc from its card onto Teddy.
+    function drawFlyer() {
+      if (!flyer) return;
+      const u = Math.min(1, flyer.t / FLY_TIME);
+      const e = u * u * (3 - 2 * u);
+      const to = itemScreenPos(flyer.item);
+      const x = flyer.x0 + (to.x - flyer.x0) * e;
+      const y = flyer.y0 + (to.y - flyer.y0) * e - Math.sin(Math.PI * u) * L.s * 0.35;
+      const size = flyer.size0 + (to.size - flyer.size0) * e;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(Math.sin(u * Math.PI * 2) * 0.4);
+      drawItem(ctx, flyer.item, 0, 0, size);
+      ctx.restore();
+    }
+
+    function draw() {
+      drawScene();
+      drawTeddy();
+      if (phase !== "title") cards.forEach(drawCard);
+
+      // Old clothes tumbling away when the weather changes.
+      for (const o of offs) {
+        ctx.save();
+        ctx.globalAlpha = 1 - o.t / 1.2;
+        ctx.translate(o.x, o.y);
+        ctx.rotate(o.spin * o.t);
+        drawItem(ctx, o.item, 0, 0, o.size);
+        ctx.restore();
+      }
+      drawFlyer();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      startAmbient();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      flyer = null;
+      lastWrongSay = -9;
+      teddy = { anim: "idle", t: 0, worn: teddy.worn };
+      changeWeather(pick(Object.keys(WEATHERS)));
+      blend = Math.min(blend, 0.3);
+      timer.start();
+    }
+
+    function cardAt(x, y) {
+      return L.spots.findIndex((s) => Math.abs(x - s.x) < L.b * 0.55 && Math.abs(y - s.y) < L.b * 0.55);
+    }
+
+    // 1, 2 and 3 pick a card; any other key makes Teddy hop.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const n = "123".indexOf(e.key);
+      if (e.key.length === 1 && n >= 0 && state === "ask") choose(n);
+      else hop();
+    });
+
+    // Tap a card to pick it, or Teddy for a hop.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const slot = cardAt(e.clientX, e.clientY);
+      if (slot >= 0 && state === "ask") choose(slot);
+      else if (Math.abs(e.clientX - L.tx) < L.s * 0.4 && e.clientY < L.ty && e.clientY > L.ty - L.s * 1.1) hop();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: the choices drift away and Teddy dances goodbye in whatever he's wearing.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      state = "done";
+      for (const c of cards) if (!c.fade) c.fade = 0.001;
+      teddy.anim = "dance";
+      teddy.t = 0;
+      cheer();
+      sparkle(L.tx, L.ty - L.s * 0.6, L.s * 0.15);
+      say("Bye bye! Teddy says thank you!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

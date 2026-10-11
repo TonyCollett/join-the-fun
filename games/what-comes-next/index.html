@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>What Comes Next?</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #2ec4b6; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    /* The washing line stays out behind the end screen; fade it enough to read the text. */
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="garden"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>What Comes Next?</h1>
+    <p>Press any key to play! 🍎🍌🍎❓</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    // Each theme's things look nothing alike, so the pattern is easy to see.
+    const THEMES = [
+      [{ emoji: "🍎", name: "apple" }, { emoji: "🍌", name: "banana" }, { emoji: "🍇", name: "grapes" }, { emoji: "🍊", name: "orange" }, { emoji: "🍉", name: "watermelon" }],
+      [{ emoji: "🐶", name: "dog" }, { emoji: "🐱", name: "cat" }, { emoji: "🐸", name: "frog" }, { emoji: "🐷", name: "pig" }, { emoji: "🐰", name: "bunny" }],
+      [{ emoji: "⭐", name: "star" }, { emoji: "❤️", name: "heart" }, { emoji: "🌙", name: "moon" }, { emoji: "🌸", name: "flower" }, { emoji: "☀️", name: "sun" }],
+      [{ emoji: "🚗", name: "car" }, { emoji: "🚌", name: "bus" }, { emoji: "🚂", name: "train" }, { emoji: "🚀", name: "rocket" }, { emoji: "✈️", name: "plane" }],
+      [{ emoji: "⚽", name: "ball" }, { emoji: "🎈", name: "balloon" }, { emoji: "🧸", name: "teddy" }, { emoji: "🦆", name: "duck" }, { emoji: "🪁", name: "kite" }],
+    ];
+    // The repeating bit of each pattern: 0 is A, 1 is B, 2 is C.
+    const PATTERNS = { AB: [0, 1], ABB: [0, 1, 1], AAB: [0, 0, 1], ABC: [0, 1, 2] };
+    // Patterns solved this round before each step up: AB with 2 choices,
+    // then ABB / AAB too, then ABC and 3 choices.
+    const LEVELS = [
+      { from: 0, patterns: ["AB"], choices: 2 },
+      { from: 3, patterns: ["AB", "ABB", "AAB"], choices: 2 },
+      { from: 6, patterns: ["AB", "ABB", "AAB", "ABC"], choices: 3 },
+    ];
+    const NOTES = [523.25, 659.25, 783.99]; // xylophone notes for A, B, C, so you can hear the pattern too
+    const TILE_COLORS = ["#ff5d73", "#2ec4b6", "#ffb627"];
+    const POP_GAP = 0.32;     // seconds between pattern pictures popping onto the line
+    const FLY_TIME = 0.6;     // seconds for the answer to fly up into the gap
+    const JUMP_TIME = 0.5;    // seconds for one happy hop on the line
+    const SHAKE_TIME = 0.5;   // seconds a wrong tile shakes
+    const ASK_AGAIN = 3;      // seconds before another key can repeat the question
+    const WORD_TIME = 0.5;    // roughly how long the voice takes per word, to wait before the next pattern
+
+    const canvas = document.getElementById("garden");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+    const cap = (s) => s[0].toUpperCase() + s.slice(1);
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [];
+    let L = {}; // layout: picture size, washing line height and sag, tile size, grass line
+    let line = [];       // pictures pegged on the line; the last one is the "?" gap
+    let tiles = [];      // the big answer tiles to choose from
+    let flyer = null;    // the right answer on its way up to the gap
+    let events = [];
+    let ask = "ask";     // intro (pictures popping on) -> ask -> fly -> yay
+    let question = "", answer = null, cursor = -1, lastAsk = 0, lastTheme = null;
+    let particles = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("whatComesNextSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+      layout();
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.grass + 10, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(L.top, L.ropeY - 30), s: rand(0.4, 0.8), speed: rand(6, 14),
+      }));
+    }
+
+    // Wide screens get roomy tiles; phones squeeze the line to fit and stack lower.
+    function layout() {
+      const landscape = W >= H * 1.1;
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const top = 14 + 2 * R + 12;
+      const n = line.length || 6;
+      const GAP = 0.1; // between pictures, as a fraction of picture size
+      const s = Math.min((W - 20) / (n + (n - 1) * GAP), (H - top) * 0.28, 150);
+      const sag = s * 0.25;
+      const ropeY = Math.max(top + s * 0.15, H * (landscape ? 0.24 : 0.3));
+      const below = ropeY + sag + s * 1.12; // bottom of the lowest picture on the line
+      // Answer tiles sit halfway between the line and the bottom, small enough to leave a gap both sides.
+      const k = Math.max(tiles.length, 2);
+      const t = Math.min((W - 32) / (k + (k - 1) * 0.25), (H - below) * 0.62, 210);
+      const tileY = (below + H) / 2;
+      L = { s, sag, ropeY, top, t, tileY, grass: Math.min(tileY - t * 0.2, H * 0.62) };
+
+      const rowW = line.length * s + (line.length - 1) * s * GAP;
+      line.forEach((p, i) => { p.x = (W - rowW) / 2 + s / 2 + i * s * (1 + GAP); });
+      const tilesW = tiles.length * t + (tiles.length - 1) * t * 0.25;
+      tiles.forEach((tl, i) => {
+        tl.x = (W - tilesW) / 2 + t / 2 + i * t * 1.25;
+        tl.y = tileY;
+      });
+    }
+
+    // How far the washing line sags at x.
+    function ropeAt(x) {
+      const u = clamp((x - W / 2) / (W / 2 - 6), -1, 1);
+      return L.ropeY + L.sag * (1 - u * u);
+    }
+
+    // Centre of a picture hanging from the line.
+    function pictureY(p) {
+      return ropeAt(p.x) + L.s * 0.56;
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // A xylophone plink: one note per kind of picture, so the pattern can be heard.
+    function plink(freq, start = 0) {
+      tone(freq, start, 0.35, 0.16, "triangle");
+      tone(freq * 2, start, 0.12, 0.05, "sine");
+    }
+
+    function hmmSound() {
+      tone(400, 0, 0.25, 0.1, "sine", 650);
+    }
+
+    function whoosh() {
+      tone(300, 0, FLY_TIME, 0.12, "sine", 1100);
+    }
+
+    // A gentle "nope", never a buzzer.
+    function softSound() {
+      tone(440, 0, 0.3, 0.08, "sine", 370);
+      tone(370, 0.2, 0.35, 0.07, "sine", 330);
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    function tock() {
+      tone(900, 0, 0.06, 0.08, "sine", 1100);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("whatComesNextSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    // Run fn after a little while (game time, so everything stays in step with the animations).
+    function later(delay, fn) {
+      events.push({ at: time + delay, fn });
+    }
+
+    function level() {
+      return LEVELS.filter((lv) => score >= lv.from).pop();
+    }
+
+    // Peg up a new pattern, one picture at a time, then ask what comes next.
+    function newPattern() {
+      const lv = level();
+      const unit = PATTERNS[pick(lv.patterns)];
+      const kinds = Math.max(...unit) + 1;
+      const theme = pick(THEMES.filter((t) => t !== lastTheme));
+      lastTheme = theme;
+      const things = shuffle([...theme]).slice(0, Math.max(kinds, lv.choices));
+      // Two goes round an AB pattern, or most of two goes round a longer one;
+      // wide screens sometimes get a whole extra picture.
+      const len = unit.length === 2 ? pick([4, 5]) : pick(W >= H * 1.1 ? [5, 6] : [5]);
+      const shown = Array.from({ length: len }, (_, i) => ({ item: things[unit[i % unit.length]], note: NOTES[unit[i % unit.length]] }));
+      answer = things[unit[len % unit.length]];
+      const answerNote = NOTES[unit[len % unit.length]];
+
+      line = shown.map((p, i) => ({ ...p, x: 0, appear: -i * POP_GAP, jumpT: JUMP_TIME, gap: false }));
+      line.push({ item: answer, note: answerNote, x: 0, appear: -len * POP_GAP, jumpT: JUMP_TIME, gap: true, filled: false });
+
+      // The other pattern pictures make the best wrong answers; then something new from the theme.
+      const others = shuffle(things.slice(0, kinds).filter((t) => t !== answer));
+      const wrong = [...others, ...things.slice(kinds)].slice(0, lv.choices - 1);
+      const tilesAt = (len + 1) * POP_GAP + 0.1;
+      tiles = shuffle([answer, ...wrong]).map((item, i) => ({
+        item, label: i + 1, x: 0, y: 0, appear: -tilesAt - i * 0.12, shake: 0, dim: false, used: false, color: TILE_COLORS[i],
+      }));
+      layout();
+
+      ask = "intro";
+      cursor = -1;
+      flyer = null;
+      shown.forEach((p, i) => later(i * POP_GAP, () => plink(p.note)));
+      later(len * POP_GAP, hmmSound);
+      tiles.forEach((tl, i) => later(tilesAt + i * 0.12, tock));
+      question = `${shown.map((p, i) => (i ? p.item.name : cap(p.item.name))).join(", ")}... what comes next?`;
+      later(len * POP_GAP + 0.2, () => { lastAsk = time; say(question); });
+      later(tilesAt + tiles.length * 0.12 + 0.2, () => { if (ask === "intro") ask = "ask"; });
+    }
+
+    // Say the pattern again (for a tap on the line, or a key that isn't an answer).
+    function askAgain() {
+      if (ask !== "ask" || time - lastAsk < ASK_AGAIN) return;
+      lastAsk = time;
+      line[line.length - 1].jumpT = 0;
+      hmmSound();
+      say(question);
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function choose(i) {
+      const tl = tiles[i];
+      if (phase !== "playing" || ask !== "ask" || !tl) return;
+      if (tl.item === answer) {
+        // Right! It flies up into the gap.
+        ask = "fly";
+        tl.used = true;
+        flyer = { item: tl.item, fromX: tl.x, fromY: tl.y, fromSize: L.t * 0.62, t: 0 };
+        whoosh();
+        say(cap(answer.name));
+      } else {
+        // Not that one: a soft shake and another go. It fades a little so the others stand out.
+        tl.shake = SHAKE_TIME;
+        tl.dim = true;
+        softSound();
+        say("Hmm, try again!");
+      }
+    }
+
+    // The answer has landed: everyone hops along the line and the whole pattern is read out.
+    function landed() {
+      const gap = line[line.length - 1];
+      gap.filled = true;
+      flyer = null;
+      sparkle(gap.x, pictureY(gap), L.s * 0.6);
+      plink(gap.note);
+      if (phase !== "playing") return;
+      ask = "yay";
+      score++;
+      line.forEach((p, i) => { p.jumpT = -0.15 - i * 0.1; });
+      later(0.25, cheer);
+      const words = line.map((p, i) => (i ? p.item.name : cap(p.item.name)));
+      say(`${words.join(", ")}!`);
+      later(1.2 + words.length * WORD_TIME, newPattern);
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      // Run anything that's due. A callback may queue more, so take the due ones out first.
+      const due = events.filter((e) => e.at <= time);
+      if (due.length) {
+        events = events.filter((e) => e.at > time);
+        for (const e of due) e.fn();
+      }
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      for (const p of line) {
+        p.appear += dt;
+        p.jumpT += dt;
+      }
+      for (const tl of tiles) {
+        tl.appear += dt;
+        tl.shake = Math.max(0, tl.shake - dt);
+      }
+      if (flyer) {
+        flyer.t += dt;
+        if (flyer.t >= FLY_TIME) landed();
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3) finishRound(`You finished ${score} pattern${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawEmoji(emoji, x, y, size) {
+      ctx.font = `${size}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(emoji, x, y);
+    }
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "#ffd84d";
+      ctx.beginPath();
+      ctx.arc(W - 100, Math.min(130, L.ropeY * 0.6), 42, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.25, L.grass + H * 0.03, W * 0.6, H * 0.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, L.grass + H * 0.05, W, H);
+      for (const f of flowers) {
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Washing line posts and the line itself.
+      ctx.fillStyle = "#8b5a2b";
+      ctx.fillRect(0, L.ropeY - 10, 10, H);
+      ctx.fillRect(W - 10, L.ropeY - 10, 10, H);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(6, L.ropeY);
+      ctx.quadraticCurveTo(W / 2, L.ropeY + 2 * L.sag, W - 6, L.ropeY);
+      ctx.stroke();
+    }
+
+    // A picture card hanging from a peg, swaying a little; the gap has a dashed edge and a bobbing "?".
+    function drawPicture(p, i) {
+      if (p.appear <= 0) return;
+      const s = L.s;
+      const pop = easeOutBack(Math.min(1, p.appear / 0.4));
+      let hop = 0, sway = Math.sin(time * 1.6 + i) * 0.03;
+      if (p.jumpT >= 0 && p.jumpT < JUMP_TIME) {
+        const u = Math.sin((p.jumpT / JUMP_TIME) * Math.PI);
+        hop = u * s * 0.18;
+        sway += u * 0.12 * (i % 2 ? 1 : -1);
+      }
+      if (phase === "finale") hop += Math.abs(Math.sin(time * 6 + i * 0.6)) * s * 0.15;
+      const showGap = p.gap && !p.filled;
+
+      ctx.save();
+      ctx.translate(p.x, ropeAt(p.x) - hop);
+      ctx.rotate(sway);
+      ctx.scale(pop, pop);
+      ctx.shadowColor = "rgba(58, 46, 92, 0.25)";
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = showGap ? "rgba(255,255,255,0.6)" : "#fff";
+      roundRect(-s / 2, s * 0.06, s, s, s * 0.16);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      if (showGap) {
+        ctx.setLineDash([s * 0.1, s * 0.07]);
+        ctx.strokeStyle = "#b15ef0";
+        ctx.lineWidth = Math.max(2, s * 0.04);
+        roundRect(-s / 2, s * 0.06, s, s, s * 0.16);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const size = s * 0.7;
+        ctx.font = `600 ${size}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#b15ef0";
+        ctx.fillText("?", 0, s * 0.6 + Math.sin(time * 4) * s * 0.04);
+      } else {
+        drawEmoji(p.item.emoji, 0, s * 0.58, s * 0.7);
+      }
+      // Wooden peg on the line.
+      ctx.fillStyle = "#c98b4f";
+      roundRect(-s * 0.06, -s * 0.06, s * 0.12, s * 0.24, s * 0.04);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // A big answer tile: coloured frame, the picture, and its number in the corner.
+    function drawTile(tl, i) {
+      if (tl.appear <= 0) return;
+      const t = L.t;
+      let s = easeOutBack(Math.min(1, tl.appear / 0.4));
+      const picked = cursor === i && ask === "ask";
+      if (picked) s *= 1.06 + Math.sin(time * 5) * 0.02;
+      const dx = tl.shake > 0 ? Math.sin(tl.shake * 45) * t * 0.05 * (tl.shake / SHAKE_TIME) : 0;
+      const bob = Math.sin(time * 2 + i * 1.3) * t * 0.015;
+
+      ctx.save();
+      ctx.translate(tl.x + dx, tl.y + bob);
+      ctx.scale(s, s);
+      ctx.globalAlpha = tl.dim ? 0.5 : 1;
+      ctx.shadowColor = "rgba(58, 46, 92, 0.3)";
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 6;
+      ctx.fillStyle = tl.color;
+      roundRect(-t / 2, -t / 2, t, t, t * 0.18);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.fillStyle = "#fff";
+      roundRect(-t * 0.41, -t * 0.41, t * 0.82, t * 0.82, t * 0.12);
+      ctx.fill();
+      if (picked) {
+        ctx.strokeStyle = "#3a2e5c";
+        ctx.lineWidth = t * 0.04;
+        roundRect(-t / 2 - t * 0.04, -t / 2 - t * 0.04, t * 1.08, t * 1.08, t * 0.2);
+        ctx.stroke();
+      }
+      if (!tl.used) drawEmoji(tl.item.emoji, 0, t * 0.02, t * 0.62);
+
+      const r = t * 0.15;
+      const bx = -t / 2 + r * 0.6, by = -t / 2 + r * 0.6;
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = tl.color;
+      ctx.lineWidth = r * 0.2;
+      ctx.beginPath();
+      ctx.arc(bx, by, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = `600 ${r * 1.4}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(tl.label, bx, by + r * 0.08);
+      ctx.restore();
+    }
+
+    // The answer arcs up from its tile into the gap, shrinking to fit.
+    function drawFlyer() {
+      if (!flyer) return;
+      const gap = line[line.length - 1];
+      const u = clamp(flyer.t / FLY_TIME, 0, 1);
+      const e = u * u * (3 - 2 * u);
+      const toY = pictureY(gap) + L.s * 0.02;
+      const x = flyer.fromX + (gap.x - flyer.fromX) * e;
+      const y = flyer.fromY + (toY - flyer.fromY) * e - Math.sin(u * Math.PI) * H * 0.12;
+      const size = flyer.fromSize + (L.s * 0.7 - flyer.fromSize) * e;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(u * Math.PI * 2);
+      drawEmoji(flyer.item.emoji, 0, 0, size);
+      ctx.restore();
+    }
+
+    function draw() {
+      drawScene();
+      line.forEach(drawPicture);
+      tiles.forEach(drawTile);
+      drawFlyer();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      events = [];
+      lastTheme = null;
+      newPattern();
+      timer.start();
+    }
+
+    function tileAt(x, y) {
+      return tiles.findIndex((tl) => Math.abs(x - tl.x) < L.t * 0.55 && Math.abs(y - tl.y) < L.t * 0.55);
+    }
+
+    // 1 / 2 / 3 picks a tile; arrows move a highlight and Enter or Space picks it.
+    // Any other key says the pattern again.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const n = tiles.findIndex((tl) => String(tl.label) === e.key);
+      if (n >= 0) { choose(n); return; }
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (ask !== "ask") return;
+        const k = tiles.length;
+        if (cursor < 0) cursor = e.key === "ArrowRight" ? 0 : k - 1;
+        else cursor = (cursor + (e.key === "ArrowRight" ? 1 : k - 1)) % k;
+        tock();
+        say(cap(tiles[cursor].item.name));
+        return;
+      }
+      if ((e.key === "Enter" || e.key === " ") && cursor >= 0) { choose(cursor); return; }
+      askAgain();
+    });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const i = tileAt(e.clientX, e.clientY);
+      if (i >= 0) choose(i);
+      else askAgain();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: the whole line dances.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      events = [];
+      ask = "done";
+      if (flyer) score++; // it was already on its way, so it counts
+      flyer = null;
+      if (line.length) line[line.length - 1].filled = true; // show the answer so the pattern's finished
+      for (const p of line) {
+        p.appear = Math.max(p.appear, 1);
+        sparkle(p.x, pictureY(p), L.s * 0.5);
+      }
+      cheer();
+      say("Great job!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

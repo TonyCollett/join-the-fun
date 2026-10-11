@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Pairs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #ffeedd;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #b15ef0; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    /* The cards stay out behind the end screen; fade them enough to read the text. */
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="table"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>Pairs</h1>
+    <p>Press any key to play! 🐷🐷</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    // Animals that look nothing alike, so a match is easy to spot.
+    const ANIMALS = [
+      { emoji: "🐮", name: "Cow", plural: "cows" },
+      { emoji: "🐷", name: "Pig", plural: "pigs" },
+      { emoji: "🐑", name: "Sheep", plural: "sheep" },
+      { emoji: "🐔", name: "Chicken", plural: "chickens" },
+      { emoji: "🐶", name: "Dog", plural: "dogs" },
+      { emoji: "🐱", name: "Cat", plural: "cats" },
+      { emoji: "🐸", name: "Frog", plural: "frogs" },
+      { emoji: "🦆", name: "Duck", plural: "ducks" },
+      { emoji: "🐰", name: "Bunny", plural: "bunnies" },
+      { emoji: "🐵", name: "Monkey", plural: "monkeys" },
+      { emoji: "🦁", name: "Lion", plural: "lions" },
+      { emoji: "🐘", name: "Elephant", plural: "elephants" },
+    ];
+    const SMALL_BOARD = 2;     // pairs on the first boards (4 cards)
+    const BIG_BOARD = 3;       // pairs once they've got the hang of it (6 cards)
+    const WINS_TO_GROW = 2;    // boards cleared before the big board
+    const CARD_ASPECT = 0.78;  // card width / height
+    const FLIP_TIME = 0.3;     // seconds to turn a card over
+    const MISMATCH_SHOW = 1.2; // seconds two different animals stay up before turning back
+    const MATCH_PAUSE = 0.9;   // seconds to enjoy a match ("Two pigs!") before the next flip
+    const CLEAR_PAUSE = 1.0;   // seconds after the last match before the party
+    const PARTY_TIME = 2.6;    // seconds of party before a fresh board is dealt
+    const DEAL_TIME = 0.45;    // seconds for a card to pop onto the table
+    const DEAL_GAP = 0.09;     // seconds between cards being dealt
+    const BOUNCE_TIME = 0.6;   // seconds for one happy bounce
+    const WIGGLE_TIME = 0.6;   // seconds of "nope" wiggle
+
+    const canvas = document.getElementById("table");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    let W = 0, H = 0, bg = null, dots = [];
+    let cards = [], particles = [], events = [];
+    let first = null;    // the face-up card waiting for its partner
+    let busy = true;     // ignore flips while cards are being dealt, compared or celebrated
+    let wins = 0;        // boards cleared this round
+    let lastAnimals = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, restartAt = 0, finaleT = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("pairsSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, "#ffeedd");
+      bg.addColorStop(1, "#ffd9ea");
+      dots = Array.from({ length: Math.round((W * H) / 9000) }, () => ({
+        x: rand(0, W), y: rand(0, H), r: rand(3, 7), color: pick(COLORS),
+      }));
+      layoutCards();
+    }
+
+    // Try each grid shape and keep whichever gives the biggest cards,
+    // so wide screens get a row and phones get a tall grid.
+    function layoutCards() {
+      const n = cards.length;
+      if (!n) return;
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const top = 14 + 2 * R + 14, bottom = H - 16, left = 16, right = W - 16;
+      const grids = n === 4 ? [[4, 1], [2, 2]] : [[3, 2], [2, 3], [6, 1]];
+      const GAP = 0.15; // gap between cards, as a fraction of card width
+      let best = null;
+      for (const [cols, rows] of grids) {
+        const w = Math.min(
+          (right - left) / (cols + (cols - 1) * GAP),
+          (bottom - top) / (rows / CARD_ASPECT + (rows - 1) * GAP),
+          260,
+        );
+        if (!best || w > best.w) best = { cols, rows, w };
+      }
+      const w = best.w, h = w / CARD_ASPECT, gap = w * GAP;
+      const gridW = best.cols * w + (best.cols - 1) * gap;
+      const gridH = best.rows * h + (best.rows - 1) * gap;
+      const x0 = (W - gridW) / 2 + w / 2;
+      const y0 = top + (bottom - top - gridH) / 2 + h / 2;
+      cards.forEach((c, i) => {
+        c.w = w;
+        c.h = h;
+        c.x = x0 + (i % best.cols) * (w + gap);
+        c.y = y0 + Math.floor(i / best.cols) * (h + gap);
+      });
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function flipSound() {
+      tone(500, 0, 0.1, 0.12, "triangle", 900);
+    }
+
+    function flipBackSound() {
+      tone(700, 0, 0.12, 0.08, "sine", 450);
+    }
+
+    // A gentle "oh well" when two cards don't match: soft, never a buzzer.
+    function softSound() {
+      tone(440, 0, 0.3, 0.08, "sine", 370);
+      tone(370, 0.2, 0.35, 0.07, "sine", 330);
+    }
+
+    function dealSound(n) {
+      for (let i = 0; i < n; i++) tone(900 + i * 60, i * DEAL_GAP, 0.06, 0.08, "sine", 1200 + i * 60);
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.15, "sine", 180);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("pairsSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    // Run fn after a little while (game time, so everything stays in step with the animations).
+    function later(delay, fn) {
+      events.push({ at: time + delay, fn });
+    }
+
+    // Deal a fresh shuffled board, numbered 1–4 or 1–6 in reading order.
+    function newBoard() {
+      const pairs = wins >= WINS_TO_GROW ? BIG_BOARD : SMALL_BOARD;
+      // Fresh animals each board, so last board's pigs don't muddle this one.
+      const animals = shuffle(ANIMALS.filter((a) => !lastAnimals.includes(a))).slice(0, pairs);
+      lastAnimals = animals;
+      const deck = shuffle([...animals, ...animals]);
+      cards = deck.map((animal, i) => ({
+        label: i + 1, animal, color: COLORS[animals.indexOf(animal) % COLORS.length],
+        x: 0, y: 0, w: 0, h: 0, state: "down", flip: 0, target: 0,
+        deal: -i * DEAL_GAP, bounceT: BOUNCE_TIME, wiggle: 0,
+      }));
+      layoutCards();
+      first = null;
+      busy = true;
+      dealSound(cards.length);
+      later(DEAL_TIME + cards.length * DEAL_GAP, () => { busy = false; });
+    }
+
+    function bounce(c, delay = 0) {
+      c.bounceT = -delay;
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function flip(c) {
+      if (phase !== "playing" || !c || c.deal < DEAL_TIME) return;
+      // Matched animals are still fun to poke: they bounce and say hello again.
+      if (c.state === "matched") {
+        if (c.bounceT >= BOUNCE_TIME) { bounce(c); say(c.animal.name); }
+        return;
+      }
+      if (busy || c.state !== "down") return;
+
+      c.state = "up";
+      c.target = 1;
+      flipSound();
+      if (!first) {
+        first = c;
+        say(`${c.animal.name}!`);
+        return;
+      }
+
+      const a = first, b = c;
+      first = null;
+      busy = true;
+      if (a.animal === b.animal) {
+        // A match! Once the card has turned over, both bounce and stay up.
+        later(FLIP_TIME, () => {
+          a.state = b.state = "matched";
+          bounce(a);
+          bounce(b, 0.08);
+          sparkle(a.x, a.y, a.w * 0.5);
+          sparkle(b.x, b.y, b.w * 0.5);
+          cheer();
+          say(`Two ${a.animal.plural}!`);
+          if (phase === "playing") score++;
+          if (cards.every((k) => k.state === "matched")) later(CLEAR_PAUSE, boardCleared);
+          else later(MATCH_PAUSE, () => { busy = false; });
+        });
+      } else {
+        // Not a match: a little wiggle, then both turn back over. No harm done.
+        say(`${b.animal.name}!`);
+        later(FLIP_TIME + 0.2, () => {
+          a.wiggle = b.wiggle = WIGGLE_TIME;
+          softSound();
+        });
+        later(MISMATCH_SHOW, () => {
+          for (const k of [a, b]) { k.state = "down"; k.target = 0; }
+          flipBackSound();
+        });
+        later(MISMATCH_SHOW + FLIP_TIME, () => { busy = false; });
+      }
+    }
+
+    // Every pair found: everyone bounces, then a new board is dealt.
+    function boardCleared() {
+      wins++;
+      cards.forEach((c, i) => {
+        bounce(c, i * 0.1);
+        later(i * 0.1, () => sparkle(c.x, c.y, c.w * 0.6));
+      });
+      fanfare();
+      const growing = wins === WINS_TO_GROW;
+      say(growing ? "You found them all! Now more cards!" : "You found them all!");
+      later(PARTY_TIME, newBoard);
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      // Run anything that's due. A callback may queue more, so take the due ones out first.
+      const due = events.filter((e) => e.at <= time);
+      if (due.length) {
+        events = events.filter((e) => e.at > time);
+        for (const e of due) e.fn();
+      }
+
+      for (const c of cards) {
+        const step = dt / FLIP_TIME;
+        c.flip = c.target > c.flip ? Math.min(c.target, c.flip + step) : Math.max(c.target, c.flip - step);
+        c.deal += dt;
+        c.bounceT += dt;
+        c.wiggle = Math.max(0, c.wiggle - dt);
+      }
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.2) finishRound(`You found ${score} pair${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawScene() {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 0.25;
+      for (const d of dots) {
+        ctx.fillStyle = d.color;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Card back: friendly blue with stars, and a big number to press.
+    function drawBack(c) {
+      const w = c.w, h = c.h, r = w * 0.14;
+      ctx.shadowColor = "rgba(58, 46, 92, 0.3)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 5;
+      ctx.fillStyle = "#5b8def";
+      roundRect(-w / 2, -h / 2, w, h, r);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      ctx.lineWidth = w * 0.03;
+      roundRect(-w / 2 + w * 0.07, -h / 2 + w * 0.07, w * 0.86, h - w * 0.14, r * 0.6);
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.font = `600 ${w * 0.14}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const [sx, sy] of [[-0.28, -0.36], [0.28, -0.36], [-0.28, 0.36], [0.28, 0.36]]) {
+        ctx.fillText("★", sx * w, sy * h);
+      }
+
+      const size = w * 0.62;
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.14;
+      ctx.strokeStyle = "#3a2e5c";
+      ctx.strokeText(c.label, 0, size * 0.06);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(c.label, 0, size * 0.06);
+    }
+
+    // Card front: the animal, on cream with a coloured frame once it's matched.
+    function drawFront(c) {
+      const w = c.w, h = c.h, r = w * 0.14;
+      ctx.shadowColor = "rgba(58, 46, 92, 0.3)";
+      ctx.shadowBlur = c.state === "matched" ? 22 : 12;
+      ctx.shadowOffsetY = 5;
+      if (c.state === "matched") ctx.shadowColor = c.color;
+      ctx.fillStyle = "#fffaf0";
+      roundRect(-w / 2, -h / 2, w, h, r);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.strokeStyle = c.state === "matched" ? c.color : "#e6dccb";
+      ctx.lineWidth = w * (c.state === "matched" ? 0.06 : 0.03);
+      roundRect(-w / 2 + ctx.lineWidth / 2, -h / 2 + ctx.lineWidth / 2, w - ctx.lineWidth, h - ctx.lineWidth, r);
+      ctx.stroke();
+
+      ctx.font = `${w * 0.62}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(c.animal.emoji, 0, 0);
+
+      // Its number, small in the corner, so the key still means this card.
+      const n = w * 0.16;
+      ctx.font = `600 ${n}px ${FONT}`;
+      ctx.fillStyle = "#b9b4c9";
+      ctx.fillText(c.label, -w / 2 + n * 0.9, -h / 2 + n * 0.9);
+    }
+
+    function drawCard(c) {
+      if (c.deal <= 0) return;
+      let s = easeOutBack(Math.min(1, c.deal / DEAL_TIME));
+      let y = c.y;
+      if (c.bounceT >= 0 && c.bounceT < BOUNCE_TIME) {
+        const u = Math.sin((c.bounceT / BOUNCE_TIME) * Math.PI);
+        y -= u * c.h * 0.16;
+        s *= 1 + u * 0.06;
+      }
+      s *= 1 + Math.sin(c.flip * Math.PI) * 0.08; // lifts off the table as it turns
+      const rot = c.wiggle > 0 ? Math.sin(c.wiggle * 40) * 0.08 * (c.wiggle / WIGGLE_TIME) : 0;
+      ctx.save();
+      ctx.translate(c.x, y);
+      ctx.rotate(rot);
+      ctx.scale(s * Math.max(0.02, Math.abs(Math.cos(c.flip * Math.PI))), s);
+      if (c.flip < 0.5) drawBack(c);
+      else drawFront(c);
+      ctx.restore();
+    }
+
+    function draw() {
+      drawScene();
+      for (const c of cards) drawCard(c);
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      wins = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      events = [];
+      lastAnimals = [];
+      newBoard();
+      say("Find the pairs!");
+      timer.start();
+    }
+
+    function cardAt(x, y) {
+      return cards.find((c) => Math.abs(x - c.x) < c.w / 2 && Math.abs(y - c.y) < c.h / 2);
+    }
+
+    // A number key turns over the card with that number; tapping a card does the same.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const c = cards.find((k) => String(k.label) === e.key);
+      if (c) flip(c);
+    });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const c = cardAt(e.clientX, e.clientY);
+      if (c) flip(c);
+      else boop();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: every card turns over to wave goodbye.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      events = [];
+      busy = true;
+      first = null;
+      cards.forEach((c, i) => {
+        c.target = 1;
+        c.wiggle = 0;
+        bounce(c, 0.4 + i * 0.12);
+      });
+      flipSound();
+      say("Bye bye, animals!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

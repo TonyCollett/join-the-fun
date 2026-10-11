@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>How Many Apples?</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff5d73; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden { display: none; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+  </style>
+</head>
+<body>
+  <canvas id="orchard"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>How Many Apples?</h1>
+    <p>Press any key to play! 🍎</p>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const EMOJI_FONT = "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const WORDS = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+    const APPLE = "🍎";
+    const EASY_TREES = 3;    // the first few trees only grow 1–3 apples
+    const SIX_AFTER = 8;     // trees picked before six-apple trees (and a 6 button) turn up
+    const GROW_GAP = 0.18;   // seconds between apples popping onto the tree
+    const DROP_START = 1.1;  // pause after a right answer before the first apple falls
+    const DROP_TIME = 0.6;   // seconds for an apple to fall into the basket
+    const DROP_GAP = 1.0;    // seconds between falling apples, so each number can be heard
+    const CHEER_TIME = 3.0;  // seconds to admire the full basket before a new tree
+    const HINT_GAP = 1.1;    // seconds between apples when counting together
+    const REASK_TIME = 9;    // quiet seconds before asking again
+    // Where the apples hang for each count, dice-style so small groups can be seen at a glance,
+    // in reading order (so counting goes left to right, top to bottom).
+    // Units of the canopy radius, from its centre.
+    const PATTERNS = [
+      [[0, -0.05]],
+      [[-0.36, -0.05], [0.36, -0.05]],
+      [[0, -0.4], [-0.38, 0.22], [0.38, 0.22]],
+      [[-0.34, -0.32], [0.34, -0.32], [-0.34, 0.3], [0.34, 0.3]],
+      [[-0.42, -0.38], [0.42, -0.38], [0, -0.02], [-0.42, 0.36], [0.42, 0.36]],
+      [[-0.5, -0.3], [0, -0.36], [0.5, -0.3], [-0.5, 0.3], [0, 0.36], [0.5, 0.3]],
+    ];
+    // Leafy blobs that make up the canopy: [x, y, r] in canopy radii.
+    const CANOPY = [[0, 0, 0.9], [-0.62, 0.2, 0.6], [0.62, 0.2, 0.6], [-0.38, -0.5, 0.6], [0.38, -0.5, 0.6]];
+    // Where apples sit in the basket for each count: a row along the bottom, then piled on top.
+    // Basket widths from the middle of the rim (down is +).
+    const ROW3 = [[-0.27, 0.06], [0, 0.08], [0.27, 0.06]];
+    const BASKET_LAYOUTS = [
+      [[0, 0.07]],
+      [[-0.15, 0.07], [0.15, 0.07]],
+      ROW3,
+      [...ROW3, [0, -0.15]],
+      [...ROW3, [-0.14, -0.13], [0.14, -0.13]],
+      [...ROW3, [-0.14, -0.13], [0.14, -0.13], [0, -0.31]],
+    ];
+
+    const canvas = document.getElementById("orchard");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [];
+    let L = {};          // layout: tree, basket, ground
+    let buttons = [];    // number buttons along the bottom
+    let buttonCount = 5; // grows to 6 once six-apple trees turn up
+    let apples = [];     // this tree's apples: grow -> tree -> drop -> basket
+    let fading = [];     // the last tree's apples, fading out of the basket
+    let round = { n: 0, state: "title" }; // grow -> ask -> harvest -> cheer
+    let particles = [];
+    let shake = 0, wiggle = 0, counterT = 0;
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, score = 0, trees = 0, restartAt = 0, finaleT = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("appleCountSound") !== "off"; } catch {}
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+
+      const landscape = W >= H * 1.1;
+      const clockR = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const top = 14 + 2 * clockR + 8; // keep the tree clear of the clock
+
+      // Number buttons along the bottom: one row if they come out big enough, otherwise two.
+      const gap = clamp(Math.min(W, H) * 0.02, 8, 16);
+      const maxS = Math.min(130, H * (landscape ? 0.2 : 0.15));
+      let perRow = buttonCount;
+      let s = Math.min(maxS, (W - 32 - gap * (perRow - 1)) / perRow);
+      if (s < Math.min(80, maxS * 0.9)) {
+        perRow = Math.ceil(buttonCount / 2);
+        s = Math.min(maxS, (W - 32 - gap * (perRow - 1)) / perRow);
+      }
+      const rows = Math.ceil(buttonCount / perRow);
+      const btnTop = H - 16 - s * 0.07 - rows * s - (rows - 1) * gap;
+      buttons = Array.from({ length: buttonCount }, (_, i) => {
+        const row = Math.floor(i / perRow), col = i % perRow;
+        const inRow = Math.min(perRow, buttonCount - row * perRow);
+        const rowW = inRow * s + (inRow - 1) * gap;
+        const old = buttons[i] || { t: 0, press: 0, shake: 0, glow: 0 }; // new buttons pop in
+        return { ...old, n: i + 1, s, x: (W - rowW) / 2 + col * (s + gap) + s / 2, y: btnTop + row * (s + gap) + s / 2 };
+      });
+
+      // The tree fills the space between the clock and the buttons; the basket sits beside it.
+      const ground = btnTop - Math.max(10, s * 0.12);
+      const avail = ground - top;
+      const R = Math.max(24, Math.min(avail / 2.55, W * (landscape ? 0.15 : 0.3)));
+      const treeX = landscape ? W * 0.34 : Math.max(16 + 1.22 * R, W * 0.4);
+      const cy = top + 1.1 * R + Math.max(0, avail - 2.55 * R) * 0.35; // spare height goes to the trunk
+      const bw = R * (landscape ? 1.15 : 1.0);
+      const bh = bw * 0.5;
+      const basketX = landscape ? W * 0.72 : W - 16 - bw * 0.55;
+      L = { R, treeX, cy, ground, bw, bh, basketX, rimY: ground - bh * 0.9, apple: R * 0.34, horizon: ground - H * 0.14 };
+
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.horizon + H * 0.06, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.12, Math.max(H * 0.14, L.horizon - H * 0.1)), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    // Where an apple hangs on the tree, and where it sits in the basket.
+    function treePos(a) {
+      return { x: L.treeX + a.px * L.R, y: L.cy + a.py * L.R };
+    }
+
+    function basketPos(a) {
+      const [sx, sy] = BASKET_LAYOUTS[a.n - 1][a.slot];
+      return { x: L.basketX + sx * L.bw, y: L.rimY + sy * L.bw };
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // Leafy shh-shh when the tree gets a shake.
+    let lastRustle = 0;
+    function rustle() {
+      if (time - lastRustle < 0.3) return;
+      lastRustle = time;
+      const a = audio(); if (!a) return;
+      for (let i = 0; i < 3; i++) {
+        const t = a.currentTime + i * 0.12;
+        const src = a.createBufferSource();
+        const filter = a.createBiquadFilter();
+        const gain = a.createGain();
+        src.buffer = noise;
+        filter.type = "bandpass";
+        filter.frequency.value = rand(2500, 4000);
+        filter.Q.value = 1.5;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+        src.connect(filter).connect(gain).connect(master);
+        src.start(t, rand(0, 1.5));
+        src.stop(t + 0.13);
+      }
+    }
+
+    function popSound() {
+      tone(500, 0, 0.12, 0.15, "sine", 1000);
+    }
+
+    // An apple landing in the basket.
+    function thud() {
+      tone(180, 0, 0.14, 0.3, "sine", 70);
+      tone(900, 0, 0.04, 0.05, "triangle", 500);
+    }
+
+    function chime() {
+      tone(783.99, 0, 0.25, 0.15, "triangle");
+      tone(1046.5, 0.1, 0.4, 0.15, "triangle");
+    }
+
+    // Soft and friendly, never a buzzer.
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.12) return;
+      lastBoop = time;
+      tone(330, 0, 0.12, 0.13, "sine", 260);
+      tone(260, 0.12, 0.18, 0.13, "sine", 200);
+    }
+
+    let lastClick = 0;
+    function click() {
+      if (time - lastClick < 0.08) return;
+      lastClick = time;
+      tone(900, 0, 0.05, 0.06, "sine", 700);
+    }
+
+    function cheer() {
+      [523.25, 659.25, 783.99].forEach((f, i) => tone(f, i * 0.08, 0.3, 0.15, "triangle"));
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    function say(text) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("appleCountSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    function makeApples(n, state) {
+      return PATTERNS[n - 1].map(([px, py], i) => ({
+        px: px + rand(-0.05, 0.05), py: py + rand(-0.05, 0.05),
+        state, t: 0, delay: 0.4 + i * GROW_GAP, popped: state !== "grow",
+        slot: i, n, label: 0, bump: 9, landT: 9,
+      }));
+    }
+
+    // A fresh tree: the basket empties and new apples pop out of the leaves.
+    function newTree() {
+      const max = trees < EASY_TREES ? 3 : trees >= SIX_AFTER ? 6 : 5;
+      if (max > buttonCount) {
+        buttonCount = max;
+        resize(); // makes room for the new button, which pops in
+      }
+      let n;
+      do { n = 1 + ((Math.random() * max) | 0); } while (n === round.n);
+      fading = apples.filter((a) => a.state === "basket");
+      for (const a of fading) a.t = 0;
+      apples = makeApples(n, "grow");
+      for (const b of buttons) b.glow = 0;
+      round = { n, state: "grow", t: 0, idle: 0, hint: null, hinted: false, tapped: 0, dropped: 0, landed: 0, cheered: false };
+    }
+
+    // Count the apples together, lighting each one up with its number.
+    function startHint() {
+      for (const a of apples) a.label = 0;
+      round.tapped = 0;
+      round.hint = { i: -1, t: 0 };
+      say("Let's count!");
+    }
+
+    // A tapped apple gets the next number, so little fingers can count along.
+    function countApple(a) {
+      round.idle = 0;
+      if (a.label) { wiggle = 0.3; return; }
+      a.label = ++round.tapped;
+      a.bump = 0;
+      popSound();
+      say(`${WORDS[a.label - 1]}!`);
+    }
+
+    function answer(d) {
+      const b = buttons.find((b) => b.n === d);
+      if (b) b.press = 0.15;
+      if (round.state !== "ask") { click(); return; }
+      round.idle = 0;
+      if (d === round.n) {
+        // Right! The apples drop into the basket one at a time, counted out loud.
+        round.state = "harvest";
+        round.t = 0;
+        round.hint = null;
+        for (const a of apples) a.label = 0;
+        if (phase === "playing") score += round.n;
+        if (b) { b.glow = 1; sparkle(b.x, b.y, b.s * 0.5); }
+        chime();
+        say(`Yes! ${WORDS[round.n - 1]}!`);
+      } else {
+        // Not quite: a gentle boop, a wiggle, and (if we're not already) a count together.
+        boop();
+        wiggle = 0.6;
+        if (b) b.shake = 0.4;
+        if (!round.hint) startHint();
+      }
+    }
+
+    function dropApple(a, delay = 0) {
+      a.state = "drop";
+      a.t = -delay;
+      a.label = 0;
+    }
+
+    function land(a) {
+      a.state = "basket";
+      a.landT = 0;
+      thud();
+      const p = basketPos(a);
+      sparkle(p.x, p.y, L.apple * 0.4);
+      if (phase === "playing" && round.state === "harvest") {
+        round.landed++;
+        counterT = 0;
+        say(`${WORDS[round.landed - 1]}!`);
+        if (round.landed === round.n) {
+          round.state = "cheer";
+          round.t = 0;
+        }
+      }
+    }
+
+    function shakeTree() {
+      shake = 0.5;
+      rustle();
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function updateRound(dt) {
+      round.t += dt;
+      if (round.state === "grow" && apples.every((a) => a.state === "tree")) {
+        round.state = "ask";
+        round.idle = 0;
+        say("How many apples?");
+      } else if (round.state === "ask") {
+        const h = round.hint;
+        if (h) {
+          h.t += dt;
+          if (h.i < round.n - 1 && h.t >= (h.i + 1) * HINT_GAP) {
+            h.i++;
+            const a = apples[h.i];
+            a.label = h.i + 1;
+            a.bump = 0;
+            popSound();
+            say(`${WORDS[h.i]}!`);
+          } else if (h.i === round.n - 1 && h.t >= (round.n + 0.7) * HINT_GAP) {
+            round.hint = null;
+            round.hinted = true;
+            round.idle = 0;
+            say("How many apples?");
+          }
+        } else {
+          round.idle += dt;
+          if (round.idle > REASK_TIME) {
+            round.idle = 0;
+            if (!round.hinted) startHint();
+            else { wiggle = 0.6; say("How many apples?"); }
+          }
+        }
+      } else if (round.state === "harvest") {
+        while (round.dropped < round.n && round.t >= DROP_START + round.dropped * DROP_GAP) {
+          dropApple(apples[round.dropped++]);
+        }
+      } else if (round.state === "cheer") {
+        if (!round.cheered && round.t > 0.8) {
+          round.cheered = true;
+          cheer();
+          sparkle(L.basketX, L.rimY - L.bw * 0.2, L.bw * 0.5);
+          const n = round.n;
+          say(`${WORDS[n - 1]} apple${n === 1 ? "" : "s"}! Yummy!`);
+        }
+        if (round.t > CHEER_TIME) {
+          trees++;
+          newTree();
+        }
+      }
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      shake = Math.max(0, shake - dt);
+      wiggle = Math.max(0, wiggle - dt);
+      counterT += dt;
+      for (const b of buttons) {
+        b.t += dt;
+        b.press = Math.max(0, b.press - dt);
+        b.shake = Math.max(0, b.shake - dt);
+      }
+
+      for (const a of apples) {
+        a.t += dt;
+        a.bump += dt;
+        a.landT += dt;
+        if (a.state === "grow" && !a.popped && a.t >= a.delay) {
+          a.popped = true;
+          popSound();
+        }
+        if (a.state === "grow" && a.t >= a.delay + 0.35) a.state = "tree";
+        if (a.state === "drop" && a.t >= DROP_TIME) land(a);
+      }
+      for (const a of fading) a.t += dt;
+      fading = fading.filter((a) => a.t < 0.5);
+
+      if (phase === "playing") updateRound(dt);
+      if (phase === "finale") {
+        finaleT += dt;
+        if (finaleT > 3.2) finishRound(`You counted ${score} apple${score === 1 ? "" : "s"}!`);
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+    }
+
+    // ---------- Drawing ----------
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      c.beginPath();
+      for (const [x, y, r] of list) {
+        c.moveTo(x + r, y);
+        c.arc(x, y, r, 0, Math.PI * 2);
+      }
+      c.fill();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      circles(ctx, "#ffd84d", [[W - 100, Math.min(130, L.horizon * 0.45), 42]]);
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.2, L.horizon + H * 0.06, W * 0.6, H * 0.14, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, L.horizon + H * 0.08, W * 0.55, H * 0.13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, L.horizon + H * 0.06, W, H);
+
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+    }
+
+    function drawApple(x, y, size, rot = 0, scale = 1, alpha = 1) {
+      if (scale <= 0 || alpha <= 0) return;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.scale(scale, scale);
+      ctx.font = `${size}px ${EMOJI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#000"; // emoji pick up the fill's alpha, so make sure it's opaque
+      ctx.fillText(APPLE, 0, 0);
+      ctx.restore();
+    }
+
+    // Big leafy tree; the apples hanging on it sway along when it's shaken.
+    function drawTree() {
+      const { treeX: x, cy, R, ground } = L;
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.ellipse(x, ground, R * 0.8, R * 0.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#8b5a2b";
+      ctx.beginPath();
+      ctx.moveTo(x - R * 0.15, cy + R * 0.3);
+      ctx.lineTo(x - R * 0.17, ground - R * 0.12);
+      ctx.quadraticCurveTo(x - R * 0.2, ground, x - R * 0.34, ground);
+      ctx.lineTo(x + R * 0.34, ground);
+      ctx.quadraticCurveTo(x + R * 0.2, ground, x + R * 0.17, ground - R * 0.12);
+      ctx.lineTo(x + R * 0.15, cy + R * 0.3);
+      ctx.closePath();
+      ctx.fill();
+
+      const sway = shake > 0 ? Math.sin(time * 40) * 0.035 * Math.min(1, shake / 0.3) : 0;
+      ctx.save();
+      ctx.translate(x, cy + R * 0.7);
+      ctx.rotate(sway);
+      ctx.translate(-x, -(cy + R * 0.7));
+      circles(ctx, "#3f9e4a", CANOPY.map(([px, py, r]) => [x + px * R, cy + py * R, r * R * 1.04]));
+      circles(ctx, "#4caf50", CANOPY.map(([px, py, r]) => [x + px * R, cy + py * R, r * R]));
+      circles(ctx, "#5cbf5a", [[x - R * 0.5, cy - R * 0.62, R * 0.16], [x + R * 0.22, cy - R * 0.8, R * 0.12], [x - R * 0.75, cy + R * 0.05, R * 0.1], [x + R * 0.8, cy + R * 0.1, R * 0.12]]);
+
+      apples.forEach((a, i) => {
+        const hanging = a.state === "tree" || a.state === "grow" || (a.state === "drop" && a.t < 0);
+        if (!hanging) return;
+        const p = treePos(a);
+        const grow = a.state === "grow" ? easeOutBack(clamp((a.t - a.delay) / 0.35, 0, 1)) : 1;
+        const w = wiggle > 0 ? Math.min(1, wiggle / 0.3) : 0;
+        const rot = Math.sin(time * 2 + i) * 0.06 + Math.sin(time * 28 + i * 2) * 0.3 * w;
+        const bump = a.bump < 0.3 ? 1 + 0.35 * Math.sin((a.bump / 0.3) * Math.PI) : 1;
+        if (a.label) circles(ctx, "rgba(255,255,255,0.65)", [[p.x, p.y, L.apple * 0.62 * bump]]);
+        drawApple(p.x + Math.sin(time * 30 + i) * L.apple * 0.08 * w, p.y, L.apple, rot, grow * bump);
+      });
+      // Counting numbers go on top of all the apples.
+      for (const a of apples) {
+        if (!a.label || a.state !== "tree") continue;
+        const p = treePos(a);
+        drawBadge(p.x + L.apple * 0.42, p.y - L.apple * 0.42, L.apple * 0.3, a.label);
+      }
+      ctx.restore();
+    }
+
+    function drawBadge(x, y, r, n) {
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = COLORS[(n - 1) % COLORS.length];
+      ctx.lineWidth = r * 0.22;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = `600 ${r * 1.4}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(n, x, y + r * 0.08);
+    }
+
+    function drawBasketBack() {
+      const { basketX: x, rimY: y, bw, bh } = L;
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.ellipse(x, y + bh, bw * 0.48, bw * 0.07, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#a0522d";
+      ctx.lineCap = "round";
+      ctx.lineWidth = bw * 0.06;
+      ctx.beginPath();
+      ctx.ellipse(x, y, bw * 0.4, bw * 0.55, 0, Math.PI, 0);
+      ctx.stroke();
+      ctx.fillStyle = "#6b3f1d";
+      ctx.beginPath();
+      ctx.ellipse(x, y, bw * 0.5, bw * 0.13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = bw * 0.07;
+      ctx.beginPath();
+      ctx.ellipse(x, y, bw * 0.5, bw * 0.13, 0, Math.PI, 0);
+      ctx.stroke();
+    }
+
+    function drawBasketFront() {
+      const { basketX: x, rimY: y, bw, bh } = L;
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(x, y, bw * 0.5, bw * 0.13, 0, 0, Math.PI);
+      ctx.lineTo(x - bw * 0.38, y + bh);
+      ctx.quadraticCurveTo(x, y + bh * 1.12, x + bw * 0.38, y + bh);
+      ctx.closePath();
+      ctx.fillStyle = "#c68642";
+      ctx.fill();
+      ctx.clip();
+      // Woven look: wobbly bands across, darker stripes down.
+      ctx.strokeStyle = "rgba(107, 63, 29, 0.35)";
+      ctx.lineWidth = bw * 0.025;
+      for (let i = 1; i < 4; i++) {
+        const yy = y + bw * 0.1 + (bh * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(x - bw * 0.5, yy);
+        ctx.quadraticCurveTo(x, yy + bw * 0.06, x + bw * 0.5, yy);
+        ctx.stroke();
+      }
+      for (let i = -3; i <= 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x + i * bw * 0.13, y);
+        ctx.lineTo(x + i * bw * 0.1, y + bh * 1.2);
+        ctx.stroke();
+      }
+      ctx.restore();
+      ctx.strokeStyle = "#a0522d";
+      ctx.lineWidth = bw * 0.07;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.ellipse(x, y, bw * 0.5, bw * 0.13, 0, 0, Math.PI);
+      ctx.stroke();
+    }
+
+    // Apples on their way down hop off the branch and arc into the basket, spinning.
+    function drawFallingApples() {
+      for (const a of fading) {
+        const p = basketPos(a);
+        drawApple(p.x, p.y, L.apple, 0, 1, 1 - a.t / 0.5);
+      }
+      for (const a of apples) {
+        if (a.state === "basket") {
+          const p = basketPos(a);
+          const hop = a.landT < 0.3 ? Math.sin((a.landT / 0.3) * Math.PI) * L.apple * 0.2 : 0;
+          drawApple(p.x, p.y - hop, L.apple);
+        } else if (a.state === "drop" && a.t >= 0) {
+          const k = clamp(a.t / DROP_TIME, 0, 1);
+          const from = treePos(a), to = basketPos(a);
+          const x = from.x + (to.x - from.x) * k;
+          const y = from.y + (to.y - from.y) * k * k - Math.sin(Math.PI * k) * L.R * 0.35;
+          drawApple(x, y, L.apple, k * Math.PI * 2);
+        }
+      }
+    }
+
+    // The running count, big above the basket, popping as each apple lands.
+    function drawCounter() {
+      if (!round.landed || !(round.state === "harvest" || round.state === "cheer")) return;
+      const n = round.landed;
+      const size = clamp(L.R * 0.75, 44, 120);
+      const pop = 1 + 0.45 * Math.max(0, 1 - counterT / 0.3);
+      const y = L.rimY - L.bw * 0.55 - size * 0.55 + Math.sin(time * 3) * 3;
+      ctx.save();
+      ctx.translate(L.basketX, y);
+      ctx.scale(pop, pop);
+      ctx.font = `600 ${size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = size * 0.18;
+      ctx.strokeStyle = "#fff";
+      ctx.strokeText(n, 0, 0);
+      ctx.fillStyle = COLORS[(n - 1) % COLORS.length];
+      ctx.fillText(n, 0, 0);
+      ctx.restore();
+    }
+
+    function drawButton(b) {
+      const pop = easeOutBack(Math.min(1, b.t / 0.4));
+      if (pop <= 0) return;
+      const glow = b.glow ? 1 + Math.sin(time * 8) * 0.05 : 1;
+      const s = b.s * pop * glow;
+      const depth = b.s * 0.07;
+      const down = b.press > 0 ? depth * 0.8 : 0;
+      const dx = b.shake > 0 ? Math.sin(b.shake * 50) * b.s * 0.06 : 0;
+      const x = b.x - s / 2 + dx, y = b.y - s / 2;
+      const r = s * 0.22;
+      if (b.glow) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+        roundRect(x - s * 0.08, y - s * 0.08 + down, s * 1.16, s * 1.16 + depth, r * 1.3);
+        ctx.fill();
+      }
+      ctx.fillStyle = "rgba(58, 46, 92, 0.3)";
+      roundRect(x, y + depth, s, s, r);
+      ctx.fill();
+      ctx.fillStyle = COLORS[(b.n - 1) % COLORS.length];
+      roundRect(x, y + down, s, s, r);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+      roundRect(x + s * 0.1, y + down + s * 0.06, s * 0.8, s * 0.16, s * 0.08);
+      ctx.fill();
+      ctx.font = `600 ${s * 0.68}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = s * 0.08;
+      ctx.strokeStyle = "rgba(58, 46, 92, 0.45)";
+      ctx.strokeText(b.n, x + s / 2, y + down + s * 0.54);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(b.n, x + s / 2, y + down + s * 0.54);
+    }
+
+    function draw() {
+      drawScene();
+      drawTree();
+      drawBasketBack();
+      drawFallingApples();
+      drawBasketFront();
+      drawCounter();
+      for (const b of buttons) drawButton(b);
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Input ----------
+
+    function start() {
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      score = 0;
+      trees = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      buttonCount = 5;
+      resize();
+      round.n = 0;
+      newTree();
+      timer.start();
+    }
+
+    // Number keys (top row or numpad) answer; anything else just gives the tree a shake.
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      const m = /^(?:Digit|Numpad)(\d)$/.exec(e.code) || /^(\d)$/.exec(e.key);
+      if (m) answer(Number(m[1]));
+      else shakeTree();
+    });
+
+    // Tap a number button to answer, tap an apple to count it, tap the tree to shake it.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (phase !== "playing") { start(); return; }
+      const x = e.clientX, y = e.clientY;
+      const b = buttons.find((b) => Math.abs(x - b.x) < b.s * 0.55 && Math.abs(y - b.y) < b.s * 0.6);
+      if (b) { answer(b.n); return; }
+      if (round.state === "ask" && !round.hint) {
+        const a = apples.find((a) => Math.hypot(x - treePos(a).x, y - treePos(a).y) < L.apple * 0.75);
+        if (a) { countApple(a); return; }
+      }
+      if (Math.abs(x - L.treeX) < L.R * 1.2 && y > L.cy - L.R * 1.1 && y < L.ground) shakeTree();
+    });
+    startScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: one big shake and every apple left tumbles into the basket.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      round.hint = null;
+      shake = 1;
+      rustle();
+      let k = 0;
+      for (const a of apples) {
+        if (a.state === "tree" || a.state === "grow") dropApple(a, 0.3 + 0.15 * k++);
+      }
+      say(k ? "Shake shake! Down come the apples!" : "Yummy apples!");
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    // Something to look at behind the title screen.
+    apples = makeApples(3, "tree");
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>My Name</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #9fdcff;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .corner {
+      position: fixed;
+      top: 12px;
+      z-index: 3;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .corner:hover { background: rgba(58, 46, 92, 0.22); }
+    #home { left: 12px; }
+    #sound { right: 12px; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 16px;
+      text-align: center;
+      color: #3a2e5c;
+      font-family: Fredoka, "Comic Sans MS", "Chalkboard SE", system-ui, sans-serif;
+      background: rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+    }
+    .overlay h1 { margin: 0; font-size: clamp(3rem, 12vw, 8rem); color: #ff8fd8; text-shadow: 0 6px 0 #fff; }
+    .overlay p { margin: 0; font-size: clamp(1.4rem, 4vw, 2.4rem); animation: pulse 1.2s ease-in-out infinite; }
+    .overlay .score { animation: none; }
+    .overlay .again { visibility: hidden; }
+    .overlay.hidden, .hidden { display: none !important; }
+    #done { background: rgba(255, 255, 255, 0.6); }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+
+    /* The child's name, big and colourful, once a grown-up has typed it. */
+    #ready { display: flex; flex-direction: column; align-items: center; gap: 24px; }
+    #nameShow { animation: none; font-size: clamp(2.4rem, 9vw, 5rem); letter-spacing: 0.05em; }
+    #nameShow span { display: inline-block; text-shadow: 0 4px 0 #fff; }
+
+    /* Grown-up setup: a plain little card, not part of the game. */
+    .setup {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 20px 24px;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.85);
+      box-shadow: 0 6px 0 rgba(58, 46, 92, 0.15);
+      cursor: auto;
+    }
+    .setup label { font-size: 1.15rem; }
+    .setup .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    .setup input {
+      width: min(280px, 70vw);
+      padding: 8px 14px;
+      border: 3px solid #5b8def;
+      border-radius: 16px;
+      font: inherit;
+      font-size: 1.6rem;
+      text-align: center;
+      color: #3a2e5c;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .setup input:focus { outline: none; border-color: #b15ef0; }
+    .setup button {
+      padding: 8px 22px;
+      border: 0;
+      border-radius: 16px;
+      background: #ff5d73;
+      color: #fff;
+      font: inherit;
+      font-size: 1.6rem;
+      cursor: pointer;
+      box-shadow: 0 4px 0 #c9455a;
+    }
+    .setup.shake { animation: shake 0.4s; }
+    @keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+    #changeName {
+      position: absolute;
+      bottom: 16px;
+      padding: 8px 14px;
+      border: 0;
+      background: none;
+      color: #3a2e5c;
+      opacity: 0.7;
+      font: inherit;
+      font-size: 1rem;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="track"></canvas>
+
+  <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
+  <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+
+  <div id="start" class="overlay">
+    <h1>My Name</h1>
+    <div id="ready" class="hidden">
+      <p id="nameShow"></p>
+      <p>Press any key to play! 🚂</p>
+    </div>
+    <form id="setup" class="setup hidden" autocomplete="off">
+      <label for="nameInput">Grown-ups: type your child's name</label>
+      <div class="row">
+        <input id="nameInput" maxlength="20" spellcheck="false" autocapitalize="words" enterkeyhint="go">
+        <button type="submit">Start</button>
+      </div>
+    </form>
+    <button id="changeName" class="hidden" type="button">change name</button>
+  </div>
+
+  <div id="done" class="overlay hidden">
+    <h1>All done! 🎉</h1>
+    <p class="score" id="score"></p>
+    <p class="again" id="again">Press any key to play again!</p>
+  </div>
+
+  <script src="../../shared/round-timer.js"></script>
+  <script>
+    const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
+    const COLORS = ["#ff5d73", "#ffb627", "#2ec4b6", "#5b8def", "#b15ef0", "#7ae582", "#ff8fd8"];
+    const INK = "#3a2e5c";
+    const NOTES = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98, 1760, 2093, 2349.32];
+    const MAX_NAME = 12;        // letters; longer names are cut short so the carriages stay big
+    const ARRIVE_TIME = 1.8;    // seconds for the train to pull in
+    const CELEBRATE_TIME = 3.4; // seconds of cheering before the train sets off
+    const HINT_INTERVAL = 7;    // seconds without the right letter before the hint is said again
+    const MISS_LIFE = 1.0;      // seconds a wrong letter floats before fading away
+    const ROW_GAP = 1.8;        // track rows are this many carriages apart, top to top
+
+    const canvas = document.getElementById("track");
+    const ctx = canvas.getContext("2d");
+    const startScreen = document.getElementById("start");
+    const readyBox = document.getElementById("ready");
+    const nameShow = document.getElementById("nameShow");
+    const setupForm = document.getElementById("setup");
+    const nameInput = document.getElementById("nameInput");
+    const changeBtn = document.getElementById("changeName");
+    const soundBtn = document.getElementById("sound");
+    const doneScreen = document.getElementById("done");
+    const scoreText = document.getElementById("score");
+    const againText = document.getElementById("again");
+    const ROUND_SECONDS = 120;
+    const timer = new RoundTimer(ROUND_SECONDS);
+
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+    const shuffle = (arr) => arr.map((v) => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
+
+    let W = 0, H = 0, sky = null, flowers = [], clouds = [];
+    let L = {}; // layout: carriage size, track rows, where the prompt and tiles go
+    let name = "";
+    let train = { state: "gone", t: 0, x: 0, speed: 0, filled: 0 };
+    let filledAt = [];   // when each carriage got its letter, for the pop-in
+    let tiles = [];      // on-screen letters to tap on touch screens
+    let touchMode = false;
+    let particles = [], confetti = [], puffs = [], misses = [];
+    let phase = "title"; // title -> playing -> finale (time's up) -> done
+    let time = 0, restartAt = 0, finaleT = 0, hintT = 0, hintAt = -9, promptAt = 0, puffIn = 0, chuffIn = 0;
+    let lettersFound = 0, namesSpelled = 0;
+    let soundOn = true;
+    try { soundOn = localStorage.getItem("nameTrainSound") !== "off"; } catch {}
+    try { name = cleanName(localStorage.getItem("nameTrainName") || ""); } catch {}
+    try { touchMode = matchMedia("(pointer: coarse)").matches; } catch {}
+
+    // Letters only (accents dropped so every letter has a key), at most MAX_NAME of them.
+    // ALL CAPS or all lower case is tidied to "Sam"; mixed case like "McKay" is kept.
+    function cleanName(raw) {
+      const letters = String(raw).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z]/gi, "").slice(0, MAX_NAME);
+      if (letters === letters.toUpperCase() || letters === letters.toLowerCase()) {
+        return letters.charAt(0).toUpperCase() + letters.slice(1).toLowerCase();
+      }
+      return letters;
+    }
+
+    // ---------- Layout ----------
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = innerWidth;
+      H = innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, "#9fdcff");
+      sky.addColorStop(1, "#e6f7ff");
+      layout();
+      clouds = Array.from({ length: Math.max(2, Math.round(W / 400)) }, () => ({
+        x: rand(0, W), y: rand(H * 0.1, Math.max(H * 0.12, L.horizon - H * 0.1)), s: rand(0.5, 1), speed: rand(6, 14),
+      }));
+    }
+
+    function layout() {
+      const n = Math.max(1, name.length);
+      // The letter to find sits in a cloud just under the round timer.
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const pu = clamp(Math.min(W, H) * 0.1, 34, 70);
+      const promptY = 14 + 2 * R + 8 + pu * 0.92;
+      const top = promptY + pu * 0.9 + 10;
+
+      // Touch screens get a row (or two) of big letter tiles along the bottom.
+      const T = clamp(Math.min(W, H) * 0.14, 52, 100);
+      const tileCount = tiles.length || Math.min(n + 3, 15);
+      const perRow = Math.max(1, Math.floor((W - 24) / (T * 1.12)));
+      const tileRows = Math.ceil(tileCount / perRow);
+      const bottom = (touchMode ? H - tileRows * T * 1.12 - 16 : H) - 12;
+
+      // One track if the carriages are big enough, otherwise split the name over two or three
+      // (each extra row has to make the carriages clearly bigger to be worth it).
+      const avail = Math.max(60, bottom - top);
+      const fit = (rows) => {
+        const cols = Math.ceil(n / rows);
+        return { rows, cols, u: Math.min((W - 32) / (cols + 1.7), avail / (rows * ROW_GAP - 0.2), 200) };
+      };
+      let best = fit(1);
+      for (let rows = 2; rows <= 3 && best.u < 70 && n > rows + 1; rows++) {
+        const more = fit(rows);
+        if (more.u > best.u * 1.15) best = more;
+      }
+      const { rows, cols, u } = best;
+      const blockH = rows * ROW_GAP * u - 0.2 * u;
+      const blockTop = top + (avail - blockH) / 2;
+      const rails = Array.from({ length: rows }, (_, r) => blockTop + 1.45 * u + r * ROW_GAP * u);
+      const startX = (W - (cols + 1.6) * u) / 2;
+      L = { R, pu, promptY, T, perRow, u, rows, cols, rails, startX, horizon: rails[0] - 0.9 * u, tilesTop: bottom + 12 };
+
+      flowers = Array.from({ length: Math.round(W / 25) }, () => ({
+        x: rand(0, W), y: rand(L.horizon + 10, H), color: pick(["#fff", "#ffe066", "#ff9fd0"]),
+      }));
+      placeTiles();
+    }
+
+    function placeTiles() {
+      const { T, perRow } = L;
+      tiles.forEach((tile, i) => {
+        const row = Math.floor(i / perRow);
+        const inRow = Math.min(perRow, tiles.length - row * perRow);
+        const col = i % perRow;
+        tile.s = T;
+        tile.x = W / 2 + (col - (inRow - 1) / 2) * T * 1.12;
+        tile.y = L.tilesTop + T * 0.56 + row * T * 1.12;
+      });
+    }
+
+    // Where carriage i's letter sits (before the train's offset is added).
+    function slotPos(i) {
+      const row = Math.floor(i / L.cols), col = i % L.cols;
+      const rail = L.rails[row];
+      return { x: L.startX + (col + 0.5) * L.u, y: rail - 0.76 * L.u, rail };
+    }
+
+    // ---------- Sound ----------
+
+    let actx = null, master = null, noise = null;
+
+    function audio() {
+      if (!soundOn) return null;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = 0.5;
+        master.connect(actx.destination);
+        noise = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+        const data = noise.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+
+    function tone(freq, start, dur, vol, type = "sine", endFreq = freq) {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime + start;
+      const osc = a.createOscillator();
+      const gain = a.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    // A soft steam chuff while the train is moving.
+    function chuff() {
+      const a = audio(); if (!a) return;
+      const t = a.currentTime;
+      const src = a.createBufferSource();
+      const filter = a.createBiquadFilter();
+      const gain = a.createGain();
+      src.buffer = noise;
+      filter.type = "lowpass";
+      filter.frequency.value = 900;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      src.connect(filter).connect(gain).connect(master);
+      src.start(t, rand(0, 1.5));
+      src.stop(t + 0.18);
+    }
+
+    function toot() {
+      for (const [start, dur] of [[0, 0.25], [0.32, 0.55]]) {
+        tone(587.33, start, dur, 0.1, "triangle");
+        tone(739.99, start, dur, 0.08, "triangle");
+        tone(880, start, dur, 0.05, "sawtooth");
+      }
+    }
+
+    // Each letter found plays the next note up, so the whole name is a little tune.
+    function ding(i) {
+      const f = NOTES[i % NOTES.length];
+      tone(f, 0, 0.35, 0.2, "triangle");
+      tone(f * 2, 0.06, 0.25, 0.06, "sine");
+    }
+
+    let lastBoop = 0;
+    function boop() {
+      if (time - lastBoop < 0.08) return;
+      lastBoop = time;
+      tone(260, 0, 0.15, 0.1, "sine", 180);
+    }
+
+    function tick() {
+      tone(1200, 0, 0.06, 0.1, "sine", 900);
+    }
+
+    function fanfare() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, i === 3 ? 0.8 : 0.3, 0.2, "triangle"));
+    }
+
+    // queue = true waits for whatever's being said to finish instead of cutting it off.
+    function say(text, queue = false) {
+      if (!soundOn || !("speechSynthesis" in window)) return;
+      if (!queue) speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.8;
+      u.pitch = 1.3;
+      speechSynthesis.speak(u);
+    }
+
+    function setSound(on) {
+      soundOn = on;
+      soundBtn.textContent = on ? "🔊" : "🔇";
+      try { localStorage.setItem("nameTrainSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    // ---------- Game ----------
+
+    const target = () => name[train.filled].toUpperCase();
+
+    // The name's letters plus a few that aren't in it, shuffled.
+    function makeTiles() {
+      const own = [...new Set(name.toUpperCase())];
+      const others = shuffle("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").filter((c) => !own.includes(c)));
+      const decoys = others.slice(0, own.length <= 5 ? 3 : 2);
+      tiles = shuffle([...own, ...decoys]).map((ch) => ({ ch, x: 0, y: 0, s: 0, press: 0 }));
+      layout();
+    }
+
+    // An empty train chugs in from the left.
+    function newTrain() {
+      train = { state: "arrive", t: 0, x: 0, speed: 0, filled: 0 };
+      filledAt = [];
+      makeTiles();
+      hintT = 0;
+    }
+
+    function trainOffset() {
+      if (train.state === "arrive") {
+        const k = clamp(train.t / ARRIVE_TIME, 0, 1);
+        return -(L.startX + (L.cols + 1.6) * L.u + 20) * (1 - k) ** 3;
+      }
+      return train.x;
+    }
+
+    function sparkle(x, y, size) {
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * Math.PI * 2;
+        const s = size * rand(2, 3.5);
+        particles.push({
+          x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+          life: rand(0.5, 0.8), age: 0, size: rand(4, 8), color: pick(COLORS),
+        });
+      }
+    }
+
+    function throwConfetti() {
+      for (let i = 0; i < 120; i++) {
+        confetti.push({
+          x: rand(0, W), y: rand(-H * 0.4, -10), vx: rand(-30, 30), vy: rand(80, 200),
+          rot: rand(0, 6), vr: rand(-6, 6), w: rand(8, 14), h: rand(5, 8), color: pick(COLORS), age: 0, life: rand(3, 4.5),
+        });
+      }
+    }
+
+    function pressLetter(ch) {
+      hintT = 0;
+      if (train.state === "wait" && ch === target()) found();
+      else miss(ch);
+    }
+
+    function found() {
+      const i = train.filled;
+      const ch = target();
+      filledAt[i] = time;
+      train.filled++;
+      if (phase === "playing") lettersFound++;
+      ding(i);
+      const p = slotPos(i);
+      sparkle(p.x + trainOffset(), p.y, L.u * 0.5);
+      if (train.filled === name.length) {
+        celebrate();
+      } else {
+        say(`${ch}!`);
+        say(`Find ${target()}!`, true);
+        promptAt = time;
+      }
+    }
+
+    // Wrong keys are fine: a small see-through letter floats up and fades.
+    function miss(ch) {
+      boop();
+      const size = L.u * 0.55;
+      const yTop = L.promptY + L.pu, yBottom = Math.max(yTop + 1, L.horizon - H * 0.06 - size * 0.4);
+      misses.push({ ch, x: rand(W * 0.08, W * 0.92), y: rand(yTop, yBottom), size, t: 0, color: pick(COLORS) });
+      if (misses.length > 15) misses.shift();
+    }
+
+    function celebrate() {
+      train.state = "celebrate";
+      train.t = 0;
+      if (phase === "playing") namesSpelled++;
+      fanfare();
+      throwConfetti();
+      say(`${name}! You spelled your name!`);
+    }
+
+    function depart() {
+      train.state = "depart";
+      train.t = 0;
+      train.x = trainOffset();
+      train.speed = 40;
+      toot();
+    }
+
+    function finishRound(message) {
+      phase = "done";
+      scoreText.textContent = message;
+      againText.style.visibility = "hidden";
+      doneScreen.classList.remove("hidden");
+      restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
+      fanfare();
+      say("All done!");
+    }
+
+    function update(dt) {
+      timer.update(dt);
+
+      for (const c of clouds) {
+        c.x += c.speed * dt;
+        if (c.x - 120 * c.s > W) c.x = -120 * c.s;
+      }
+
+      train.t += dt;
+      const moving = train.state === "arrive" || train.state === "depart";
+      if (train.state === "arrive" && train.t >= ARRIVE_TIME) {
+        train.state = "wait";
+        train.t = 0;
+        train.x = 0;
+        promptAt = time;
+        say(`Find ${target()}!`, true);
+      } else if (train.state === "wait") {
+        hintT += dt;
+        if (hintT > HINT_INTERVAL && phase === "playing") {
+          hintT = 0;
+          hintAt = time;
+          say(`Find ${target()}!`);
+        }
+      } else if (train.state === "celebrate" && train.t >= CELEBRATE_TIME) {
+        depart();
+      } else if (train.state === "depart") {
+        train.speed += Math.max(400, W * 0.6) * dt;
+        train.x += train.speed * dt;
+        if (L.startX + train.x > W + 20) {
+          train.state = "gone";
+          if (phase === "playing") newTrain();
+        }
+      }
+
+      // Steam puffs from the chimney, faster while chugging along.
+      if (train.state !== "gone") {
+        puffIn -= dt;
+        if (puffIn <= 0) {
+          puffIn = moving ? 0.15 : 0.5;
+          const x = L.startX + (L.cols + 1.19) * L.u + trainOffset();
+          puffs.push({ x, y: L.rails[0] - 1.2 * L.u, r: L.u * 0.12, t: 0, vx: moving ? -60 : rand(-15, 5) });
+        }
+        if (moving) {
+          chuffIn -= dt;
+          if (chuffIn <= 0) { chuffIn = train.state === "depart" ? Math.max(0.08, 0.3 - train.t * 0.15) : 0.25; chuff(); }
+        }
+      }
+      for (const p of puffs) {
+        p.t += dt;
+        p.x += p.vx * dt;
+        p.y -= 30 * dt;
+        p.r += L.u * 0.15 * dt;
+      }
+      puffs = puffs.filter((p) => p.t < 1.6);
+
+      for (const m of misses) m.t += dt;
+      misses = misses.filter((m) => m.t < MISS_LIFE);
+      for (const tile of tiles) tile.press = Math.max(0, tile.press - dt);
+
+      if (phase === "finale") {
+        finaleT += dt;
+        if ((train.state === "gone" && finaleT > 1.5) || finaleT > 7) {
+          const n = namesSpelled, k = lettersFound;
+          finishRound(n > 0 ? `You spelled your name ${n} time${n === 1 ? "" : "s"}!` : `You found ${k} letter${k === 1 ? "" : "s"}!`);
+        }
+      }
+      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+
+      for (const p of particles) {
+        p.age += dt;
+        p.vx *= Math.max(0, 1 - 4 * dt);
+        p.vy = p.vy * Math.max(0, 1 - 4 * dt) + 200 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      particles = particles.filter((p) => p.age < p.life);
+      for (const c of confetti) {
+        c.age += dt;
+        c.x += (c.vx + Math.sin(c.age * 3 + c.rot) * 40) * dt;
+        c.y += c.vy * dt;
+        c.rot += c.vr * dt;
+      }
+      confetti = confetti.filter((c) => c.age < c.life && c.y < H + 20);
+    }
+
+    // ---------- Drawing ----------
+
+    function circles(c, color, list) {
+      c.fillStyle = color;
+      for (const [x, y, r] of list) {
+        c.beginPath();
+        c.arc(x, y, r, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawScene() {
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H);
+
+      circles(ctx, "#ffd84d", [[W - 100, Math.min(130, L.horizon * 0.45), 42]]);
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      for (const c of clouds) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath();
+        ctx.arc(-50, 10, 35, 0, Math.PI * 2);
+        ctx.arc(0, -10, 50, 0, Math.PI * 2);
+        ctx.arc(55, 10, 38, 0, Math.PI * 2);
+        ctx.arc(0, 20, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Wrong letters float in the sky, behind the hills' edge.
+      for (const m of misses) drawMiss(m);
+
+      ctx.fillStyle = "#9bd88a";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.2, L.horizon + H * 0.04, W * 0.6, H * 0.12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#86cc74";
+      ctx.beginPath();
+      ctx.ellipse(W * 0.85, L.horizon + H * 0.05, W * 0.55, H * 0.11, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#6cbf5c";
+      ctx.fillRect(0, L.horizon + H * 0.04, W, H);
+      for (const f of flowers) circles(ctx, f.color, [[f.x, f.y, 3]]);
+
+      // Railway tracks: a rail on wooden sleepers for each row.
+      const u = L.u;
+      for (const rail of L.rails) {
+        ctx.fillStyle = "#8b5a2b";
+        for (let x = 0; x < W; x += u * 0.4) ctx.fillRect(x, rail + u * 0.02, u * 0.22, u * 0.08);
+        ctx.fillStyle = "#7d7a8c";
+        ctx.fillRect(0, rail - u * 0.01, W, Math.max(3, u * 0.045));
+      }
+    }
+
+    function drawMiss(m) {
+      const k = m.t / MISS_LIFE;
+      ctx.save();
+      ctx.globalAlpha = 0.4 * (1 - k);
+      ctx.translate(m.x, m.y - k * m.size * 0.8);
+      ctx.scale(0.6 + 0.4 * easeOutBack(Math.min(1, m.t / 0.25)), 0.6 + 0.4 * easeOutBack(Math.min(1, m.t / 0.25)));
+      ctx.font = `600 ${m.size}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = m.color;
+      ctx.fillText(m.ch, 0, 0);
+      ctx.restore();
+    }
+
+    function drawWheel(x, y, r, angle) {
+      circles(ctx, INK, [[x, y, r]]);
+      circles(ctx, "#c9c4dc", [[x, y, r * 0.62]]);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = Math.max(1.5, r * 0.18);
+      ctx.beginPath();
+      ctx.moveTo(x - Math.cos(angle) * r * 0.6, y - Math.sin(angle) * r * 0.6);
+      ctx.lineTo(x + Math.cos(angle) * r * 0.6, y + Math.sin(angle) * r * 0.6);
+      ctx.stroke();
+      circles(ctx, INK, [[x, y, r * 0.2]]);
+    }
+
+    // The engine faces right, pulling the name along. x0 is its back edge.
+    function drawEngine(x0, rail, angle) {
+      const u = L.u;
+      const b = rail - 0.16 * u; // underside
+      ctx.fillStyle = "#5b8def";
+      roundRect(x0 + 0.55 * u, b - 0.62 * u, 0.92 * u, 0.62 * u, 0.12 * u); // boiler
+      ctx.fill();
+      ctx.fillStyle = "#4a78d0";
+      for (const bx of [0.82, 1.12]) ctx.fillRect(x0 + bx * u, b - 0.62 * u, 0.06 * u, 0.62 * u);
+      ctx.fillStyle = INK;
+      ctx.fillRect(x0 + 1.1 * u, b - 0.98 * u, 0.18 * u, 0.38 * u); // chimney
+      ctx.fillRect(x0 + 1.05 * u, b - 1.04 * u, 0.28 * u, 0.09 * u);
+      ctx.fillStyle = "#ff5d73";
+      roundRect(x0 + 0.04 * u, b - 1.0 * u, 0.56 * u, 1.0 * u, 0.06 * u); // cab
+      ctx.fill();
+      ctx.fillStyle = INK;
+      roundRect(x0 - 0.02 * u, b - 1.08 * u, 0.68 * u, 0.12 * u, 0.05 * u); // roof
+      ctx.fill();
+      ctx.fillStyle = "#e6f7ff";
+      roundRect(x0 + 0.14 * u, b - 0.86 * u, 0.36 * u, 0.3 * u, 0.06 * u); // window
+      ctx.fill();
+      circles(ctx, "#ffd84d", [[x0 + 1.44 * u, b - 0.42 * u, 0.08 * u]]); // headlamp
+      ctx.fillStyle = INK; // cow catcher
+      ctx.beginPath();
+      ctx.moveTo(x0 + 1.42 * u, b - 0.12 * u);
+      ctx.lineTo(x0 + 1.62 * u, b + 0.1 * u);
+      ctx.lineTo(x0 + 1.42 * u, b + 0.1 * u);
+      ctx.closePath();
+      ctx.fill();
+      drawWheel(x0 + 0.32 * u, rail - 0.22 * u, 0.22 * u, angle);
+      drawWheel(x0 + 0.92 * u, rail - 0.13 * u, 0.13 * u, angle * 1.7);
+      drawWheel(x0 + 1.24 * u, rail - 0.13 * u, 0.13 * u, angle * 1.7);
+    }
+
+    function drawCarriage(i, off, angle) {
+      const u = L.u;
+      const p = slotPos(i);
+      const x = p.x + off, rail = p.rail;
+      const b = rail - 0.16 * u;
+      const color = COLORS[i % COLORS.length];
+
+      // Couplings to the carriage in front (or the engine).
+      const col = i % L.cols;
+      const last = col === L.cols - 1 || i === name.length - 1;
+      if (!last || Math.floor(i / L.cols) === 0) {
+        ctx.fillStyle = INK;
+        ctx.fillRect(x + 0.4 * u, b - 0.16 * u, 0.24 * u, 0.06 * u);
+      }
+
+      ctx.fillStyle = color;
+      roundRect(x - 0.42 * u, b - 0.46 * u, 0.84 * u, 0.46 * u, 0.08 * u);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.fillRect(x - 0.42 * u, b - 0.46 * u, 0.84 * u, 0.06 * u);
+      drawWheel(x - 0.22 * u, rail - 0.12 * u, 0.12 * u, angle);
+      drawWheel(x + 0.22 * u, rail - 0.12 * u, 0.12 * u, angle);
+    }
+
+    function drawSlot(i, off) {
+      const u = L.u;
+      const p = slotPos(i);
+      const x = p.x + off;
+      const ch = name[i];
+      const isTarget = i === train.filled && train.state === "wait";
+
+      if (i < train.filled) {
+        // A found letter pops in, and everyone does the wave when the name is done.
+        let y = p.y;
+        let s = easeOutBack(clamp((time - filledAt[i]) / 0.4, 0, 1));
+        y -= Math.max(0, Math.sin((time - filledAt[i]) * 8)) * u * 0.12 * Math.max(0, 1 - (time - filledAt[i]));
+        if (train.state === "celebrate") y -= Math.max(0, Math.sin(train.t * 6 - i * 0.7)) * u * 0.3;
+        const size = u * 0.8 * s;
+        if (size <= 0) return;
+        ctx.font = `600 ${size}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineJoin = "round";
+        ctx.lineWidth = size * 0.18;
+        ctx.strokeStyle = "#fff";
+        ctx.strokeText(ch, x, y);
+        ctx.fillStyle = COLORS[(i + 3) % COLORS.length];
+        ctx.fillText(ch, x, y);
+        return;
+      }
+
+      // An empty seat: a dashed box. The next one glows, bounces, and shows a faint letter.
+      let s = u * 0.62;
+      let y = p.y;
+      if (isTarget) {
+        s *= 1 + Math.abs(Math.sin(time * 4)) * 0.08;
+        if (time - hintAt < 1) y -= Math.abs(Math.sin((time - hintAt) * 12)) * u * 0.15;
+      }
+      ctx.fillStyle = isTarget ? "rgba(255, 230, 102, 0.85)" : "rgba(255, 255, 255, 0.55)";
+      roundRect(x - s / 2, y - s / 2, s, s, s * 0.18);
+      ctx.fill();
+      ctx.setLineDash([s * 0.12, s * 0.09]);
+      ctx.lineWidth = isTarget ? Math.max(3, s * 0.07) : Math.max(2, s * 0.04);
+      ctx.strokeStyle = isTarget ? "#ffb627" : "rgba(58, 46, 92, 0.35)";
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (isTarget) {
+        ctx.font = `600 ${u * 0.6}px ${FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(58, 46, 92, 0.3)";
+        ctx.fillText(ch, x, y + u * 0.02);
+      }
+    }
+
+    function drawTrain() {
+      if (train.state === "gone" || !name) return;
+      const off = trainOffset();
+      const angle = off / (0.13 * L.u);
+      for (const p of puffs) {
+        ctx.globalAlpha = 0.8 * (1 - p.t / 1.6);
+        circles(ctx, "#fff", [[p.x, p.y, p.r]]);
+      }
+      ctx.globalAlpha = 1;
+      drawEngine(L.startX + L.cols * L.u + off, L.rails[0], angle);
+      for (let i = 0; i < name.length; i++) drawCarriage(i, off, angle);
+      for (let i = 0; i < name.length; i++) drawSlot(i, off);
+    }
+
+    // The letter to find, on a key cap in a cloud just under the clock.
+    function drawPrompt() {
+      if (train.state !== "wait" || phase !== "playing") return;
+      const u = L.pu;
+      const pop = easeOutBack(Math.min(1, (time - promptAt) / 0.4));
+      if (pop <= 0) return;
+      ctx.save();
+      ctx.translate(W / 2, L.promptY + Math.sin(time * 2) * 3);
+      ctx.scale(pop, pop);
+      ctx.shadowColor = "rgba(58, 46, 92, 0.2)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      for (const [x, y, r] of [[-1.05, 0.15, 0.5], [-0.45, -0.3, 0.62], [0.35, -0.25, 0.58], [1.0, 0.12, 0.52], [0, 0.25, 0.6]]) {
+        ctx.moveTo((x + r) * u, y * u);
+        ctx.arc(x * u, y * u, r * u, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      drawKey(target(), 0, 0, u * 1.05, "#fff", 0);
+      ctx.restore();
+    }
+
+    // A chunky keyboard key with a letter on it.
+    function drawKey(ch, x, y, s, face, press) {
+      const depth = s * 0.1 * (1 - press);
+      ctx.fillStyle = "#c9c4dc";
+      roundRect(x - s / 2, y - s / 2 + s * 0.1, s, s - s * 0.1, s * 0.2);
+      ctx.fill();
+      ctx.fillStyle = face;
+      roundRect(x - s / 2, y - s / 2 + s * 0.1 - depth, s, s - s * 0.1, s * 0.2);
+      ctx.fill();
+      ctx.lineWidth = Math.max(2, s * 0.05);
+      ctx.strokeStyle = INK;
+      ctx.stroke();
+      ctx.font = `600 ${s * 0.62}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = INK;
+      ctx.fillText(ch, x, y + s * 0.07 - depth);
+    }
+
+    function drawTiles() {
+      if (!touchMode || phase === "title") return;
+      for (const tile of tiles) {
+        // After a hint, the right tile gives a little wiggle so nobody gets stuck.
+        const hinted = train.state === "wait" && tile.ch === target() && time - hintAt < 1.2;
+        ctx.save();
+        ctx.translate(tile.x, tile.y);
+        if (hinted) ctx.rotate(Math.sin((time - hintAt) * 20) * 0.12);
+        drawKey(tile.ch, 0, 0, tile.s, "#fff", tile.press > 0 ? 1 : 0);
+        ctx.restore();
+      }
+    }
+
+    function draw() {
+      drawScene();
+      drawTrain();
+      drawPrompt();
+      drawTiles();
+
+      for (const p of particles) {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        circles(ctx, p.color, [[p.x, p.y, p.size]]);
+      }
+      ctx.globalAlpha = 1;
+      for (const c of confetti) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, (c.life - c.age) / 0.5);
+        ctx.translate(c.x, c.y);
+        ctx.rotate(c.rot);
+        ctx.fillStyle = c.color;
+        ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
+        ctx.restore();
+      }
+
+      if (phase !== "title") timer.draw(ctx, W, H);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      time += dt;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ---------- Title screen & name setup ----------
+
+    // Shows the name, big and colourful, ready to play; or the setup form if there isn't one yet.
+    function showTitle() {
+      const hasName = !!name;
+      readyBox.classList.toggle("hidden", !hasName);
+      changeBtn.classList.toggle("hidden", !hasName);
+      setupForm.classList.toggle("hidden", hasName);
+      nameShow.replaceChildren(...[...name].map((ch, i) => {
+        const span = document.createElement("span");
+        span.textContent = ch;
+        span.style.color = COLORS[(i + 3) % COLORS.length];
+        return span;
+      }));
+      if (!hasName) openSetup();
+    }
+
+    function openSetup() {
+      readyBox.classList.add("hidden");
+      changeBtn.classList.add("hidden");
+      setupForm.classList.remove("hidden");
+      nameInput.value = name;
+      // Don't pop up the on-screen keyboard by itself on phones; a tap on the box will.
+      if (!touchMode) { nameInput.focus(); nameInput.select(); }
+    }
+
+    const setupOpen = () => !setupForm.classList.contains("hidden");
+
+    setupForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const clean = cleanName(nameInput.value);
+      if (!clean) {
+        setupForm.classList.remove("shake");
+        void setupForm.offsetWidth; // restart the shake animation
+        setupForm.classList.add("shake");
+        nameInput.focus();
+        return;
+      }
+      name = clean;
+      try { localStorage.setItem("nameTrainName", name); } catch {}
+      nameInput.blur();
+      showTitle();
+      layout();
+      start();
+    });
+
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && name) { nameInput.blur(); showTitle(); }
+    });
+
+    changeBtn.addEventListener("click", () => {
+      openSetup();
+      changeBtn.blur();
+    });
+
+    // ---------- Input ----------
+
+    function start() {
+      if (!name || setupOpen()) return;
+      if (phase === "playing" || phase === "finale") return;
+      if (phase === "done" && time < restartAt) return;
+      phase = "playing";
+      lettersFound = 0;
+      namesSpelled = 0;
+      startScreen.classList.add("hidden");
+      doneScreen.classList.add("hidden");
+      audio();
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      misses = [];
+      confetti = [];
+      newTrain();
+      toot();
+      say(`Let's spell ${name}!`);
+      timer.start();
+    }
+
+    addEventListener("keydown", (e) => {
+      // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
+      if (/^F\d+$/.test(e.key)) return;
+      // While a grown-up is typing the name, keys belong to the form.
+      if (phase === "title" && setupOpen()) {
+        if (e.target !== nameInput && !e.ctrlKey && !e.metaKey && !e.altKey) nameInput.focus();
+        return;
+      }
+      e.preventDefault();
+      if (phase !== "playing") { start(); return; }
+      if (e.repeat) return;
+      if (/^[a-z]$/i.test(e.key)) pressLetter(e.key.toUpperCase());
+      else if (/^[0-9]$/.test(e.key)) miss(e.key);
+    });
+
+    // Tap a letter tile; taps anywhere else just say the letter to find again.
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch" || e.pointerType === "pen") {
+        if (!touchMode) { touchMode = true; layout(); }
+      }
+      if (phase !== "playing") { start(); return; }
+      const tile = touchMode && tiles.find((t) => Math.abs(e.clientX - t.x) < t.s * 0.56 && Math.abs(e.clientY - t.y) < t.s * 0.56);
+      if (tile) {
+        tile.press = 0.15;
+        pressLetter(tile.ch);
+      } else if (train.state === "wait" && time - hintAt > 1.2) {
+        hintT = 0;
+        hintAt = time;
+        say(`Find ${target()}!`);
+      }
+    });
+    startScreen.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "touch" || e.pointerType === "pen") touchMode = true;
+      if (e.target.closest("#setup, #changeName")) return;
+      if (setupOpen()) { nameInput.focus(); return; }
+      start();
+    });
+    doneScreen.addEventListener("pointerdown", start);
+
+    soundBtn.addEventListener("click", () => {
+      setSound(!soundOn);
+      soundBtn.blur();
+    });
+
+    // Time's up: the train toots goodbye and chugs away.
+    timer.onSecond = tick;
+    timer.onEnd = () => {
+      phase = "finale";
+      finaleT = 0;
+      if (train.state === "wait" || train.state === "arrive") {
+        depart();
+        say("Toot toot! Bye bye!");
+      }
+    };
+
+    setSound(soundOn);
+    addEventListener("resize", resize);
+    resize();
+    showTitle();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
