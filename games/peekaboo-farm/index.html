@@ -71,7 +71,7 @@
 
   <div id="start" class="overlay">
     <h1>Peekaboo Farm</h1>
-    <p>Press any key to play! 🐮</p>
+    <p>Press the number on the wiggling hiding spot! 🐮</p>
   </div>
 
   <div id="done" class="overlay hidden">
@@ -125,7 +125,7 @@
     const easeOutBack = (t) => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
 
     let W = 0, H = 0, sky = null, horizon = 0, flowers = [], clouds = [];
-    let spots = KINDS.map((kind) => ({ kind, x: 0, y: 0, s: 0, state: "idle", t: 0, animal: null, poke: 0, cycle: -1 }));
+    let spots = KINDS.map((kind, i) => ({ kind, x: 0, y: 0, s: 0, state: "idle", t: 0, animal: null, poke: 0, cycle: -1, label: i + 1 }));
     let particles = [];
     let phase = "title"; // title -> playing -> finale (time's up) -> done
     let time = 0, score = 0, restartAt = 0, finaleT = 0, nextWiggleIn = 0;
@@ -288,7 +288,15 @@
       return p.hidden;
     }
 
+    // Each new animal brings four new consecutive numbers (single digits, so one key press picks a spot),
+    // laid out in reading order.
+    function relabel() {
+      const first = 1 + ((Math.random() * 6) | 0); // 1-4 up to 6-9
+      spots.forEach((sp, i) => { sp.label = first + i; });
+    }
+
     function wiggleNext() {
+      relabel();
       const choices = spots.filter((sp, i) => i !== lastSpot);
       const sp = pick(choices);
       lastSpot = spots.indexOf(sp);
@@ -498,6 +506,26 @@
       ctx.scale(sp.s, sp.s);
       DRAW[sp.kind](ctx);
       ctx.restore();
+      drawLabel(sp);
+    }
+
+    // A round number sign in front of each spot; the wiggling one gently bounces.
+    function drawLabel(sp) {
+      let r = sp.s * 0.14;
+      if (sp.state === "wiggle") r *= 1 + Math.abs(Math.sin(sp.t * 4)) * 0.12;
+      const x = sp.x, y = sp.y + sp.s * 0.17;
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = sp.state === "wiggle" ? "#ffb627" : "#3a2e5c";
+      ctx.lineWidth = r * 0.16;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = `600 ${r * 1.4}px ${FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#3a2e5c";
+      ctx.fillText(sp.label, x, y + r * 0.08);
     }
 
     function drawName(sp) {
@@ -561,19 +589,22 @@
     function spotAt(x, y) {
       return spots.find((sp) =>
         Math.abs(x - sp.x) < sp.s * 0.55 &&
-        y < sp.y + sp.s * 0.1 &&
+        y < sp.y + sp.s * 0.32 && // includes the number sign
         y > sp.y + (TOPS[sp.kind] - 0.3) * sp.s);
     }
 
-    // Any key finds whoever is hiding in the wiggling spot.
+    // Only the wiggling spot's number finds whoever is hiding there;
+    // another spot's number just gives that spot a little shake.
     addEventListener("keydown", (e) => {
       // Leave F1–F12 alone so grown-ups can still use F11, F5, etc.
       if (/^F\d+$/.test(e.key)) return;
       e.preventDefault();
       if (phase !== "playing") { start(); return; }
       if (e.repeat) return;
-      const sp = spots.find((s) => s.state === "wiggle");
-      if (sp) reveal(sp);
+      const sp = spots.find((s) => String(s.label) === e.key);
+      if (!sp) return;
+      if (sp.state === "wiggle") reveal(sp);
+      else if (sp.state === "idle") { sp.poke = 0.3; boop(); say(String(sp.label)); }
     });
 
     // Tap the wiggling spot to find the animal; other spots just give a little shake.

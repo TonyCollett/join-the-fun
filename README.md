@@ -8,7 +8,7 @@ Every game is a single static HTML file — no build step, no dependencies.
 | 🎆 Letter Pop | Find the floating letter or number; a firework blows it up |
 | 🎉 Key Party | Any key makes an emoji friend and a musical note |
 | 🫧 Bubble Pop | Pop rising letter/number bubbles by key or tap |
-| 🐮 Peekaboo Farm | Find the hiding animal and hear its name and sound |
+| 🐮 Peekaboo Farm | Press the number on the wiggling hiding spot to find the animal and hear its name and sound |
 | 🎨 Colour Splash | Fling paint and learn colour names |
 | 🐤 Duckling Parade | Count ducklings to ten, then they jump in the pond |
 | 🎹 Animal Piano | Each keyboard row is an animal that sings a note |
