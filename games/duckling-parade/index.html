@@ -645,12 +645,50 @@
       ctx.fillText(d.n, d.x, y);
     }
 
+    // The number to type, big in a cloud just under the clock so it's easy to spot.
+    // It pops in fresh for each new ghost; digits already typed light up in colour.
+    function drawPrompt() {
+      if (!ghost || parade !== "lining" || phase !== "playing") return;
+      const R = Math.max(30, Math.min(55, Math.min(W, H) * 0.065)); // the round timer's radius
+      const u = clamp(Math.min(W, H) * 0.08, 30, 75);
+      const text = String(ghost.n);
+      const pop = easeOutBack(Math.min(1, ghost.t / 0.4));
+      if (pop <= 0) return;
+      ctx.save();
+      ctx.translate(W / 2, 14 + 2 * R + 8 + u * 0.92 + Math.sin(time * 2) * 3);
+      ctx.scale(pop, pop);
+
+      ctx.shadowColor = "rgba(58, 46, 92, 0.2)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      for (const [x, y, r] of [[-1.05, 0.15, 0.5], [-0.45, -0.3, 0.62], [0.35, -0.25, 0.58], [1.0, 0.12, 0.52], [0, 0.25, 0.6]]) {
+        ctx.moveTo((x + r) * u, y * u);
+        ctx.arc(x * u, y * u, r * u, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+
+      ctx.font = `600 ${u * 1.15}px ${FONT}`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      let x = -ctx.measureText(text).width / 2;
+      for (let i = 0; i < text.length; i++) {
+        ctx.fillStyle = i < typed.length ? COLORS[(ghost.n - 1) % COLORS.length] : "#3a2e5c";
+        ctx.fillText(text[i], x, u * 0.08);
+        x += ctx.measureText(text[i]).width;
+      }
+      ctx.restore();
+    }
+
     function draw() {
       drawScene();
       // Back rows first so nearer ducklings overlap the ones behind.
       const sorted = [...ducks, ...(ghost ? [ghost] : [])].sort((a, b) => a.y - b.y);
       for (const d of sorted) drawDuck(d);
       for (const d of sorted) drawNumber(d);
+      drawPrompt();
 
       for (const p of particles) {
         ctx.globalAlpha = 1 - p.age / p.life;
