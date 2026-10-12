@@ -37,6 +37,7 @@
     .corner:hover { background: rgba(58, 46, 92, 0.22); }
     #home { left: 12px; }
     #sound { right: 12px; }
+    #voice { right: 68px; }
     .overlay {
       position: fixed;
       inset: 0;
@@ -67,6 +68,7 @@
 
   <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
   <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+  <button id="voice" class="corner" tabindex="-1" title="Voice on/off">🗣️</button>
 
   <div id="start" class="overlay">
     <h1>Shape Sorter</h1>
@@ -120,6 +122,7 @@
     const ctx = canvas.getContext("2d");
     const startScreen = document.getElementById("start");
     const soundBtn = document.getElementById("sound");
+    const voiceBtn = document.getElementById("voice");
     const doneScreen = document.getElementById("done");
     const scoreText = document.getElementById("score");
     const againText = document.getElementById("again");
@@ -153,6 +156,8 @@
     let lastKind = null, lastPaint = null;
     let soundOn = true;
     try { soundOn = localStorage.getItem("shapeSorterSound") !== "off"; } catch {}
+    let voiceOn = true;
+    try { voiceOn = localStorage.getItem("shapeSorterVoice") !== "off"; } catch {}
 
     // ---------- Layout ----------
 
@@ -272,7 +277,7 @@
     }
 
     function say(text) {
-      if (!soundOn || !("speechSynthesis" in window)) return;
+      if (!soundOn || !voiceOn || !("speechSynthesis" in window)) return;
       lastSpoke = time;
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
@@ -285,6 +290,13 @@
       soundOn = on;
       soundBtn.textContent = on ? "🔊" : "🔇";
       try { localStorage.setItem("shapeSorterSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    function setVoice(on) {
+      voiceOn = on;
+      voiceBtn.textContent = on ? "🗣️" : "🤐";
+      try { localStorage.setItem("shapeSorterVoice", on ? "on" : "off"); } catch {}
       if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
     }
 
@@ -745,6 +757,10 @@
       setSound(!soundOn);
       soundBtn.blur();
     });
+    voiceBtn.addEventListener("click", () => {
+      setVoice(!voiceOn);
+      voiceBtn.blur();
+    });
 
     // Time's up: the lid pops off and every shape sorted this round bursts out.
     timer.onSecond = tick;
@@ -766,6 +782,7 @@
     };
 
     setSound(soundOn);
+    setVoice(voiceOn);
     setHoles(SHAPES.slice(0, FEW_HOLES));
     addEventListener("resize", resize);
     resize();

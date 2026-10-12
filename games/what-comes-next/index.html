@@ -37,6 +37,7 @@
     .corner:hover { background: rgba(58, 46, 92, 0.22); }
     #home { left: 12px; }
     #sound { right: 12px; }
+    #voice { right: 68px; }
     .overlay {
       position: fixed;
       inset: 0;
@@ -68,6 +69,7 @@
 
   <a id="home" class="corner" href="../../index.html" tabindex="-1" title="Back to games">🏠</a>
   <button id="sound" class="corner" tabindex="-1" title="Sound on/off">🔊</button>
+  <button id="voice" class="corner" tabindex="-1" title="Voice on/off">🗣️</button>
 
   <div id="start" class="overlay">
     <h1>What Comes Next?</h1>
@@ -115,6 +117,7 @@
     const ctx = canvas.getContext("2d");
     const startScreen = document.getElementById("start");
     const soundBtn = document.getElementById("sound");
+    const voiceBtn = document.getElementById("voice");
     const doneScreen = document.getElementById("done");
     const scoreText = document.getElementById("score");
     const againText = document.getElementById("again");
@@ -147,6 +150,8 @@
     let time = 0, score = 0, restartAt = 0, finaleT = 0;
     let soundOn = true;
     try { soundOn = localStorage.getItem("whatComesNextSound") !== "off"; } catch {}
+    let voiceOn = true;
+    try { voiceOn = localStorage.getItem("whatComesNextVoice") !== "off"; } catch {}
 
     // ---------- Layout ----------
 
@@ -277,7 +282,7 @@
     }
 
     function say(text) {
-      if (!soundOn || !("speechSynthesis" in window)) return;
+      if (!soundOn || !voiceOn || !("speechSynthesis" in window)) return;
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 0.8;
@@ -289,6 +294,13 @@
       soundOn = on;
       soundBtn.textContent = on ? "🔊" : "🔇";
       try { localStorage.setItem("whatComesNextSound", on ? "on" : "off"); } catch {}
+      if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
+    }
+
+    function setVoice(on) {
+      voiceOn = on;
+      voiceBtn.textContent = on ? "🗣️" : "🤐";
+      try { localStorage.setItem("whatComesNextVoice", on ? "on" : "off"); } catch {}
       if (!on && "speechSynthesis" in window) speechSynthesis.cancel();
     }
 
@@ -719,6 +731,10 @@
       setSound(!soundOn);
       soundBtn.blur();
     });
+    voiceBtn.addEventListener("click", () => {
+      setVoice(!voiceOn);
+      voiceBtn.blur();
+    });
 
     // Time's up: the whole line dances.
     timer.onSecond = tick;
@@ -739,6 +755,7 @@
     };
 
     setSound(soundOn);
+    setVoice(voiceOn);
     addEventListener("resize", resize);
     resize();
     requestAnimationFrame(frame);
