@@ -104,9 +104,15 @@
       cursor: pointer;
       box-shadow: 0 4px 0 #c9455a;
     }
+    .setup .clear {
+      padding: 8px 14px;
+      background: rgba(58, 46, 92, 0.12);
+      color: #3a2e5c;
+      box-shadow: none;
+    }
     .setup.shake { animation: shake 0.4s; }
     @keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
-    #changeName {
+    .changeName {
       position: absolute;
       bottom: 16px;
       padding: 8px 14px;
@@ -137,16 +143,18 @@
       <label for="nameInput">Grown-ups: type your child's name</label>
       <div class="row">
         <input id="nameInput" maxlength="20" spellcheck="false" autocapitalize="words" enterkeyhint="go">
+        <button id="clearName" class="clear" type="button" title="Clear the name">✕</button>
         <button type="submit">Start</button>
       </div>
     </form>
-    <button id="changeName" class="hidden" type="button">change name</button>
+    <button id="changeName" class="changeName hidden" type="button">change name</button>
   </div>
 
   <div id="done" class="overlay hidden">
     <h1>All done! 🎉</h1>
     <p class="score" id="score"></p>
     <p class="again" id="again">Press any key to play again!</p>
+    <button id="doneChangeName" class="changeName again" type="button" tabindex="-1">change name</button>
   </div>
 
   <script src="../../shared/round-timer.js"></script>
@@ -170,6 +178,8 @@
     const setupForm = document.getElementById("setup");
     const nameInput = document.getElementById("nameInput");
     const changeBtn = document.getElementById("changeName");
+    const clearBtn = document.getElementById("clearName");
+    const doneChangeBtn = document.getElementById("doneChangeName");
     const soundBtn = document.getElementById("sound");
     const doneScreen = document.getElementById("done");
     const scoreText = document.getElementById("score");
@@ -490,7 +500,7 @@
     function finishRound(message) {
       phase = "done";
       scoreText.textContent = message;
-      againText.style.visibility = "hidden";
+      againText.style.visibility = doneChangeBtn.style.visibility = "hidden";
       doneScreen.classList.remove("hidden");
       restartAt = time + 2; // stop key-mashing from skipping straight past the end screen
       fanfare();
@@ -563,7 +573,7 @@
           finishRound(n > 0 ? `You spelled your name ${n} time${n === 1 ? "" : "s"}!` : `You found ${k} letter${k === 1 ? "" : "s"}!`);
         }
       }
-      if (phase === "done" && time >= restartAt) againText.style.visibility = "visible";
+      if (phase === "done" && time >= restartAt) againText.style.visibility = doneChangeBtn.style.visibility = "visible";
 
       for (const p of particles) {
         p.age += dt;
@@ -942,6 +952,21 @@
       changeBtn.blur();
     });
 
+    clearBtn.addEventListener("click", () => {
+      nameInput.value = "";
+      nameInput.focus();
+    });
+
+    // From the end screen, go back to the title with the name box open.
+    doneChangeBtn.addEventListener("click", () => {
+      if (time < restartAt) return;
+      phase = "title";
+      doneScreen.classList.add("hidden");
+      startScreen.classList.remove("hidden");
+      openSetup();
+      doneChangeBtn.blur();
+    });
+
     // ---------- Input ----------
 
     function start() {
@@ -1001,7 +1026,10 @@
       if (setupOpen()) { nameInput.focus(); return; }
       start();
     });
-    doneScreen.addEventListener("pointerdown", start);
+    doneScreen.addEventListener("pointerdown", (e) => {
+      if (e.target === doneChangeBtn) return;
+      start();
+    });
 
     soundBtn.addEventListener("click", () => {
       setSound(!soundOn);
