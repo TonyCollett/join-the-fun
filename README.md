@@ -20,8 +20,6 @@ Every game is a single static HTML file — no build step, no dependencies.
 | 🦁 Alphabet Zoo | Press a letter and an animal pops out of the zoo gate: "B is for Bear!" |
 | 🃏 Pairs | Flip numbered cards to find matching animal pairs |
 | 🧩 What Comes Next? | Finish the repeating pattern of fruit and friends |
-| 😊 How Do I Feel? | A big face shows a feeling; find the matching small face |
-| 🧸 Dress Teddy | Pick the right clothes for sun, rain or snow and Teddy dances |
 
 Each round lasts two minutes, shown on an analog countdown clock
 (`shared/round-timer.js`).
