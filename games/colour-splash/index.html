@@ -95,6 +95,7 @@
     </div>
   </div>
 
+  <script src="../../shared/parent-settings.js"></script>
   <script src="../../shared/round-timer.js"></script>
   <script>
     const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
@@ -122,8 +123,7 @@
     const doneScreen = document.getElementById("done");
     const scoreText = document.getElementById("score");
     const againText = document.getElementById("again");
-    const ROUND_SECONDS = 120;
-    const timer = new RoundTimer(ROUND_SECONDS);
+    const timer = new RoundTimer();
 
     // Splats are stamped onto this offscreen layer so the painting builds up.
     const paint = document.createElement("canvas");

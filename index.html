@@ -64,15 +64,56 @@
     .game:active { transform: translateY(4px); box-shadow: 0 4px 0 var(--card-shadow); }
     .game .icon { font-size: 5rem; line-height: 1; }
     .game.soon { background: #d9d4e8; color: #8a83a3; pointer-events: none; }
+    .games.locked .game { filter: grayscale(1); opacity: 0.45; }
+    .status { margin: -12px 0 28px; font-size: 1.3rem; text-align: center; }
+    .status.done { font-size: clamp(1.6rem, 5vw, 2.4rem); font-weight: bold; }
+    .cog {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(58, 46, 92, 0.08);
+      font-size: 24px;
+      cursor: pointer;
+    }
+    .cog:hover, .cog:focus-visible { background: rgba(58, 46, 92, 0.18); }
+    dialog {
+      width: min(420px, calc(100vw - 32px));
+      border: 0;
+      border-radius: 24px;
+      padding: 24px;
+      color: var(--ink);
+      background: #fff;
+      font-family: system-ui, sans-serif;
+      box-shadow: 0 10px 40px rgba(58, 46, 92, 0.3);
+    }
+    dialog::backdrop { background: rgba(58, 46, 92, 0.4); }
+    dialog h2 { margin: 0 0 16px; }
+    dialog form { display: flex; flex-direction: column; gap: 16px; }
+    dialog form[hidden] { display: none; }
+    dialog label { display: flex; flex-direction: column; gap: 6px; font-weight: bold; }
+    dialog input, dialog select, dialog button { font: inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid #c9c3dc; }
+    dialog p { margin: 0; }
+    dialog .wrong { color: #c62828; }
+    dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+    dialog button { background: #f3f0fa; color: var(--ink); cursor: pointer; }
+    dialog button.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
     footer { margin-top: 48px; font-size: 1.1rem; }
     footer a { color: var(--ink); opacity: 0.7; }
     footer a:hover, footer a:focus-visible { opacity: 1; }
   </style>
 </head>
 <body>
+  <button id="options" class="cog" title="Grown-up options" aria-label="Grown-up options">⚙️</button>
+
   <h1 aria-label="Join the Fun">
     <span>J</span><span>o</span><span>i</span><span>n</span> <span>t</span><span>h</span><span>e</span> <span>F</span><span>u</span><span>n</span>
   </h1>
+
+  <p id="status" class="status" hidden></p>
 
   <main class="games">
     <a class="game" href="games/letter-pop/index.html" style="background:#ff5d73">
@@ -143,5 +184,135 @@
   <footer>
     <a href="https://github.com/TonyCollett/join-the-fun">View the source on GitHub</a>
   </footer>
+
+  <dialog id="options-dialog">
+    <form id="gate">
+      <h2>Grown-ups only</h2>
+      <label>What is <span id="gate-question"></span>?
+        <input id="gate-answer" type="number" inputmode="numeric" autocomplete="off" required>
+      </label>
+      <p id="gate-wrong" class="wrong" hidden>Not quite. Try again.</p>
+      <div class="buttons">
+        <button type="button" class="close">Cancel</button>
+        <button class="primary">Open options</button>
+      </div>
+    </form>
+    <form id="settings" hidden>
+      <h2>Options</h2>
+      <label>Length of each game
+        <select id="round-minutes">
+          <option value="1">1 minute</option>
+          <option value="2">2 minutes</option>
+          <option value="3">3 minutes</option>
+          <option value="5">5 minutes</option>
+          <option value="10">10 minutes</option>
+        </select>
+      </label>
+      <label>Play time per day
+        <select id="daily-minutes">
+          <option value="0">No limit</option>
+          <option value="10">10 minutes</option>
+          <option value="15">15 minutes</option>
+          <option value="20">20 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="45">45 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="90">1½ hours</option>
+          <option value="120">2 hours</option>
+        </select>
+      </label>
+      <p id="played-today"></p>
+      <div class="buttons">
+        <button type="button" id="reset-today">Reset today's time</button>
+        <button type="button" class="close primary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="shared/parent-settings.js"></script>
+  <script>
+    const statusLine = document.getElementById("status");
+    const games = document.querySelector(".games");
+    const dialog = document.getElementById("options-dialog");
+    const gate = document.getElementById("gate");
+    const gateQuestion = document.getElementById("gate-question");
+    const gateAnswer = document.getElementById("gate-answer");
+    const gateWrong = document.getElementById("gate-wrong");
+    const settings = document.getElementById("settings");
+    const roundMinutes = document.getElementById("round-minutes");
+    const dailyMinutes = document.getElementById("daily-minutes");
+    const playedToday = document.getElementById("played-today");
+    let answer = 0;
+
+    const minutes = (seconds) => {
+      const m = Math.ceil(seconds / 60);
+      return `${m} minute${m === 1 ? "" : "s"}`;
+    };
+
+    function addOption(select, value) {
+      if ([...select.options].some((o) => Number(o.value) === value)) return;
+      select.add(new Option(`${value} minutes`, value));
+    }
+
+    function refresh() {
+      const { dailyMinutes: daily } = ParentSettings.get();
+      const left = ParentSettings.secondsLeftToday();
+      const locked = !ParentSettings.canPlay();
+      games.classList.toggle("locked", locked);
+      games.inert = locked;
+      statusLine.hidden = !daily;
+      statusLine.classList.toggle("done", locked);
+      statusLine.textContent = locked
+        ? "🌙 All done for today! Come back tomorrow."
+        : `⏱️ ${minutes(left)} of play left today`;
+      playedToday.textContent = `Played today: ${minutes(ParentSettings.playedToday())}` +
+        (daily ? ` of ${minutes(daily * 60)}` : "");
+    }
+
+    document.getElementById("options").addEventListener("click", () => {
+      const a = 3 + Math.floor(Math.random() * 7);
+      const b = 3 + Math.floor(Math.random() * 7);
+      answer = a + b;
+      gateQuestion.textContent = `${a} + ${b}`;
+      gateAnswer.value = "";
+      gateWrong.hidden = true;
+      gate.hidden = false;
+      settings.hidden = true;
+      dialog.showModal();
+    });
+
+    gate.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (Number(gateAnswer.value) !== answer) {
+        gateWrong.hidden = false;
+        gateAnswer.select();
+        return;
+      }
+      const s = ParentSettings.get();
+      addOption(roundMinutes, s.roundMinutes);
+      addOption(dailyMinutes, s.dailyMinutes);
+      roundMinutes.value = s.roundMinutes;
+      dailyMinutes.value = s.dailyMinutes;
+      gate.hidden = true;
+      settings.hidden = false;
+      roundMinutes.focus();
+    });
+
+    roundMinutes.addEventListener("change", () => ParentSettings.set({ roundMinutes: Number(roundMinutes.value) }));
+    dailyMinutes.addEventListener("change", () => {
+      ParentSettings.set({ dailyMinutes: Number(dailyMinutes.value) });
+      refresh();
+    });
+    document.getElementById("reset-today").addEventListener("click", () => {
+      ParentSettings.resetToday();
+      refresh();
+    });
+    for (const btn of dialog.querySelectorAll(".close")) btn.addEventListener("click", () => dialog.close());
+
+    // Coming back from a game (including via the back button's page cache) or from another tab.
+    addEventListener("pageshow", refresh);
+    addEventListener("focus", refresh);
+    refresh();
+  </script>
 </body>
 </html>

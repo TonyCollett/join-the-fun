@@ -21,8 +21,21 @@ Every game is a single static HTML file — no build step, no dependencies.
 | 🃏 Pairs | Flip numbered cards to find matching animal pairs |
 | 🧩 What Comes Next? | Finish the repeating pattern of fruit and friends |
 
-Each round lasts two minutes, shown on an analog countdown clock
-(`shared/round-timer.js`).
+Each round is shown on an analog countdown clock (`shared/round-timer.js`).
+
+## Grown-up options
+
+The ⚙️ cog in the top-left of the hub page opens the options, behind a quick
+sum so little hands can't change them:
+
+- **Length of each game**: 1, 2 (the default), 3, 5 or 10 minutes.
+- **Play time per day**: no limit, or 10 minutes up to 2 hours. Time counts
+  while a round is running. A round that would go past the limit is cut short,
+  and once the time is used up every game shows "All done for today!" until
+  tomorrow. The options also show today's total and can reset it.
+
+Settings and today's play time are kept in the browser's `localStorage`
+(`shared/parent-settings.js`), so they belong to that browser and device.
 
 ## Running locally
 

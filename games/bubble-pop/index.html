@@ -80,6 +80,7 @@
     <p class="again" id="again">Press any key to play again!</p>
   </div>
 
+  <script src="../../shared/parent-settings.js"></script>
   <script src="../../shared/round-timer.js"></script>
   <script>
     const FONT = "Fredoka, 'Comic Sans MS', 'Chalkboard SE', system-ui, sans-serif";
@@ -99,8 +100,7 @@
     const doneScreen = document.getElementById("done");
     const scoreText = document.getElementById("score");
     const againText = document.getElementById("again");
-    const ROUND_SECONDS = 120;
-    const timer = new RoundTimer(ROUND_SECONDS);
+    const timer = new RoundTimer();
 
     const rand = (a, b) => a + Math.random() * (b - a);
     const pick = (arr) => arr[(Math.random() * arr.length) | 0];

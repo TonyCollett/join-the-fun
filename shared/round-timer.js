@@ -3,33 +3,46 @@
 // it, turning green -> yellow -> red, and the clock pulses each second
 // for the last ten seconds.
 //
-//   const timer = new RoundTimer(120);
+// The round length comes from the grown-up options (shared/parent-settings.js),
+// and a round is cut short if it would run past today's play-time limit.
+// Once that limit is used up the game is locked until tomorrow.
+//
+//   const timer = new RoundTimer();
 //   timer.onSecond = (s) => ...;  // called at 10, 9, ... 1 seconds left
 //   timer.onEnd = () => ...;
 //   timer.start();
 //   timer.update(dt); timer.draw(ctx, W, H);
 class RoundTimer {
-  constructor(seconds = 120) {
-    this.total = seconds;
-    this.left = seconds;
+  constructor() {
+    this.total = ParentSettings.roundSeconds();
+    this.left = this.total;
     this.running = false;
     this.onSecond = null;
     this.onEnd = null;
   }
 
   start() {
+    if (!ParentSettings.canPlay()) {
+      ParentSettings.lock();
+      return;
+    }
+    this.total = Math.min(ParentSettings.roundSeconds(), ParentSettings.secondsLeftToday());
     this.left = this.total;
     this.running = true;
   }
 
   update(dt) {
     if (!this.running) return;
+    ParentSettings.addPlayTime(dt);
     const before = Math.ceil(this.left);
     this.left = Math.max(0, this.left - dt);
     const after = Math.ceil(this.left);
     if (after !== before && after > 0 && after <= 10 && this.onSecond) this.onSecond(after);
     if (this.left === 0) {
       this.running = false;
+      ParentSettings.flush();
+      // Out of play time: let the end-of-round celebration play, then say goodnight.
+      if (!ParentSettings.canPlay()) ParentSettings.lock(4);
       if (this.onEnd) this.onEnd();
     }
   }
@@ -93,3 +106,5 @@ class RoundTimer {
     ctx.restore();
   }
 }
+
+if (!ParentSettings.canPlay()) ParentSettings.lock();
