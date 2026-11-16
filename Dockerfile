@@ -1,6 +1,11 @@
 # Static site served by nginx running as a non-root user on port 8080.
 FROM nginxinc/nginx-unprivileged:alpine
 
+# Pick up Alpine security fixes that the base image may not have yet.
+USER root
+RUN apk upgrade --no-cache
+USER 101
+
 COPY --chown=nginx:nginx index.html /usr/share/nginx/html/
 COPY --chown=nginx:nginx shared /usr/share/nginx/html/shared
 COPY --chown=nginx:nginx games /usr/share/nginx/html/games
