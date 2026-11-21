@@ -1,5 +1,7 @@
 # Static site served by nginx running as a non-root user on port 8080.
-FROM nginxinc/nginx-unprivileged:alpine
+# nginxinc/nginx-unprivileged is no longer updated; the image moved to
+# nginx/nginx-unprivileged. 1.31.9 fixes nginx2root (CVE-2026-123007 et al.).
+FROM nginx/nginx-unprivileged:1.31.9-alpine
 
 # Pick up Alpine security fixes that the base image may not have yet.
 USER root
